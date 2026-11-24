@@ -64,12 +64,12 @@ function writeGPKGFile(
 		driver = "GPKG",
 		options = Dict("SPATIAL_INDEX" => "YES"),
 	)
-	info(logger, "saved $edges_file")
+	@info "saved $edges_file"
 	GeoDataFrames.write(
 		vertices_file,
 		tbl_nodes;
 		driver = "GPKG",
 		options = Dict("SPATIAL_INDEX" => "YES"),
 	)
-	info(logger, "saved $vertices_file")
+	@info "saved $vertices_file"
 end

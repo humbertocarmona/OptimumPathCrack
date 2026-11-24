@@ -19,7 +19,6 @@
 function cellList_lat_lon(coords::Vector{Tuple{Float64, Float64}};
 	cellWidth::Float64 = 100.0)
 	n_nodes = size(coords, 1)
-	debug(logger, "n_nodes = $(n_nodes)")
 	lat = [coords[i][1] for i ∈ 1:n_nodes]
 	lon = [coords[i][2] for i ∈ 1:n_nodes]
 	lat_min, lat_max = extrema(lat)
@@ -37,8 +36,6 @@ function cellList_lat_lon(coords::Vector{Tuple{Float64, Float64}};
 	x = lon .- lon_min
 	y = lat .- lat_min
 
-    debug(logger, "ang Lx = $(Lx), Ly = $(Ly)")
-	debug(logger, "ang nx = $(nx), ny = $(ny)")
 
 	# # using euclidean_distance
 	# dx = dy = 100
@@ -56,8 +53,6 @@ function cellList_lat_lon(coords::Vector{Tuple{Float64, Float64}};
 	# nx = Int(ceil(Lx / dx)) + 1
 	# ny = Int(ceil(Ly / dy)) + 1
 
-	# debug(logger, "euc Lx = $(Lx), Ly = $(Ly)")
-	# debug(logger, "euc nx = $(nx), ny = $(ny)")
 
 	# Initialize cell and next node tracking with zeros
 	cells = spzeros(Int, nx, ny)
@@ -66,9 +61,8 @@ function cellList_lat_lon(coords::Vector{Tuple{Float64, Float64}};
 
 	# Assign nodes to grid cells
 	for node in 1:n_nodes
-		i = Int(floor(x[node] / d_lat)) + 1
-		j = Int(floor(y[node] / d_lon)) + 1
-        # debug(logger, "node:$(node),  i=$i, j=$j")
+		i = Int(floor(x[node] / d_lon)) + 1
+		j = Int(floor(y[node] / d_lat)) + 1
 
         # point_x = LLA(lat_min, lon[node], 0)
         # point_y = LLA(lat[node], lon_min, 0)
@@ -77,12 +71,9 @@ function cellList_lat_lon(coords::Vector{Tuple{Float64, Float64}};
         # dist_y = euclidean_distance(point_y, point1)
         # i = Int(floor(dist_x / dx)) + 1
         # j = Int(floor(dist_y / dy)) + 1
-		# debug(logger, "node:$(node),  i=$i, j=$j")
 
 
-		if i > nx || j > ny
-			debug(logger, "($i, $j) vs. ($nx, $ny)")
-		else
+		if i <= nx && j <= ny
 			last = cells[i, j]
 			cells[i, j] = node
 			next[node] = last
@@ -96,6 +87,7 @@ function cellList_lat_lon(coords::Vector{Tuple{Float64, Float64}};
 	return Dict("coords" => coords,
 		"pos" => pos,
 		"cellSize" => [d_lon,  d_lat],
+		"cellWidth" => cellWidth,
 		"nCells" => [nx,  ny],
 		"cells" => cells,
 		"next" => next)
@@ -105,7 +97,6 @@ end
 function cellList_euclidean(coords::Vector{Tuple{Float64, Float64}}; cellWidth::Float64 = 100.0)
 
 	n_nodes = size(coords, 1)
-	debug(logger, "n_nodes = $(n_nodes)")
 	lat = [coords[i][1] for i ∈ 1:n_nodes]
 	lon = [coords[i][2] for i ∈ 1:n_nodes]
 	lat_min, lat_max = extrema(lat)
@@ -118,13 +109,11 @@ function cellList_euclidean(coords::Vector{Tuple{Float64, Float64}}; cellWidth::
 	point3 = LLA(lat_min, lon_max, 0)
 	Ly = euclidean_distance(point1, point2)
 	Lx = euclidean_distance(point1, point3)
-    dx = dy = 100
+    dx = dy = cellWidth
 
 	# Determine number of grid cells in x and y directions
 	nx = Int(ceil(Lx / dx)) + 1
 	ny = Int(ceil(Ly / dy)) + 1
-	debug(logger, "Lx = $(Lx), Ly = $(Ly)")
-	debug(logger, "nx = $(nx), ny = $(ny)")
 
 	# Initialize cell and next node tracking with zeros
 	cells = spzeros(Int, nx, ny)
@@ -142,11 +131,8 @@ function cellList_euclidean(coords::Vector{Tuple{Float64, Float64}}; cellWidth::
 
         i = Int(floor(dist_x / dx)) + 1
         j = Int(floor(dist_y / dy)) + 1
-		debug(logger, "node:$(node),  i=$i, j=$j")
 
-		if i > nx || j > ny
-			debug(logger, "($i, $j) vs. ($nx, $ny)")
-		else
+		if i <= nx && j <= ny
 			last = cells[i, j]
 			cells[i, j] = node
 			next[node] = last
@@ -160,6 +146,7 @@ function cellList_euclidean(coords::Vector{Tuple{Float64, Float64}}; cellWidth::
 	return Dict("coords" => coords,
 		"pos" => pos,
 		"cellSize" => [dx,  dy],
+		"cellWidth" => cellWidth,
 		"nCells" => [nx,  ny],
 		"cells" => cells,
 		"next" => next)

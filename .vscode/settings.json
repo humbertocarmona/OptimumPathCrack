@@ -3,6 +3,7 @@
         "distmx",
         "nnodes",
         "nvertices",
+        "testset",
         "weightmx"
     ]
 }

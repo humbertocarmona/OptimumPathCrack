@@ -67,8 +67,8 @@ function test_cellList()
 	display(result["pos"])
 
 	# Extract values from the result dictionary
-	dx, dy = result["dx"], result["dy"]
-	nx, ny = result["nx"], result["ny"]
+	dx, dy = result["cellSize"]
+	nx, ny = result["nCells"]
 	cells, next = result["cells"], result["next"]
 
 	# Perform assertions
@@ -88,7 +88,7 @@ function test_OD_matrix()
 	cell_list = cellList_lat_lon(coords; cellWidth = 100.0)
 	println(typeof(cell_list))
 	n_od_pairs = 1000
-	OD = OD_matrix(1000.0, cell_list, n_od_pairs = n_od_pairs)
+	OD = create_ODs(1000.0, cell_list, n_od_pairs = n_od_pairs)
 
 	@test size(OD, 1) == n_od_pairs  # Ensure coords are stored properly
 end
@@ -112,22 +112,126 @@ function test_crackOptimalPaths()
 	removed_matrix=removed_edges, path_matrix=path_edges, od=(orig, dest))
 end
 
+function load_boston()
+	buildNetworkFromTables("data/boston-edges-4h.csv", "data/boston-nodes.csv")
+end
+
+function test_cost_ratio_and_reachability()
+	g, coords, distance_matrix, weight_matrix, _ = load_boston()
+	cell_list = cellList_lat_lon(coords; cellWidth = 100.0)
+	ℓ = 3000.0
+	OD = create_ODs(ℓ, cell_list, n_od_pairs = 20, graph = g)
+	@test length(OD) == 20
+	@test allunique(OD)
+	comp = zeros(Int, nv(g))
+	for (c, m) in enumerate(strongly_connected_components(g))
+		comp[m] .= c
+	end
+	@test all(comp[o] == comp[d] for (o, d) in OD)
+
+	# pick a pair that needs several removals
+	k = findfirst(od -> maximum(crackOptimalPaths(g, od..., weight_matrix)[2]) >= 3, OD)
+	@test k !== nothing
+	orig, dest = OD[k]
+	_, rem_full, _, res_full = crackOptimalPaths(g, orig, dest, weight_matrix)
+	@test res_full.stop_reason == :disconnected
+	@test issorted(res_full.path_costs)            # costs never decrease
+	@test length(res_full.path_costs) == maximum(rem_full)
+
+	ratio = 1.05
+	_, rem_r, _, res_r = crackOptimalPaths(g, orig, dest, weight_matrix; maxCostRatio = ratio)
+	n_r = Int(maximum(rem_r; init = 0.0))
+	@test n_r <= maximum(rem_full)
+	if res_r.stop_reason == :cost_ratio
+		@test res_r.path_costs[end] > ratio * res_r.path_costs[1]
+		@test all(res_r.path_costs[1:(end-1)] .<= ratio * res_r.path_costs[1])
+	end
+	# same edges removed, in the same order, up to the stop
+	I, J, K = findnz(rem_r)
+	@test all(rem_full[I[p], J[p]] == K[p] for p in eachindex(K))
+
+	_, rem_m, _, res_m = crackOptimalPaths(g, orig, dest, weight_matrix; nMaxRem = 2)
+	@test res_m.stop_reason == :max_removals && maximum(rem_m) == 2
+end
+
+"""
+Replays each crack with Graphs.jl's Dijkstra: before the k-th removal, the shortest
+path cost must equal `path_costs[k]`, and the k-th removed edge must lie on a
+shortest path.
+"""
+function test_early_exit_dijkstra()
+	g, coords, _, weight_matrix, _ = load_boston()
+	cell_list = cellList_lat_lon(coords; cellWidth = 100.0)
+	for ℓ in (500.0, 3000.0)
+		for (o, d) in create_ODs(ℓ, cell_list, n_od_pairs = 5, graph = g, seed = 7)
+			_, rem, _, res = crackOptimalPaths(g, o, d, weight_matrix; maxCostRatio = 2.0)
+			I, J, K = findnz(rem)
+			order = sortperm(K)
+			gr = copy(g)
+			for (k, p) in enumerate(order)
+				i, j = I[p], J[p]
+				from_o = dijkstra_shortest_paths(gr, o, weight_matrix).dists
+				to_d = dijkstra_shortest_paths(reverse(gr), d, transpose(weight_matrix)).dists
+				@test from_o[d] ≈ res.path_costs[k]
+				@test from_o[i] + weight_matrix[i, j] + to_d[j] ≈ res.path_costs[k]
+				rem_edge!(gr, i, j)
+			end
+			final = dijkstra_shortest_paths(gr, o, weight_matrix).dists[d]
+			if res.stop_reason == :disconnected
+				@test isinf(final)
+			else
+				@test final ≈ res.path_costs[end] && final > 2.0 * res.path_costs[1]
+			end
+		end
+	end
+end
+
+function test_crackStatistics()
+	g, coords, distance_matrix, weight_matrix, _ = load_boston()
+	edges_df, od_df = crackStatistics(g, coords, distance_matrix, weight_matrix,
+		[1000.0, 3000.0]; n_od_pairs = 5, maxCostRatio = 1.5)
+	@test nrow(od_df) == 10
+	@test sort(unique(od_df.ℓ)) == [1000.0, 3000.0]
+	@test all(abs.(od_df.od_distance .- od_df.ℓ) .< 0.01 .* od_df.ℓ)
+	@test all(od_df.n_removed .> 0)
+	@test sum(od_df.n_removed) == nrow(edges_df)
+	@test all(r -> weight_matrix[r.src, r.dst] == r.weight &&
+				   distance_matrix[r.src, r.dst] == r.length, eachrow(edges_df))
+	@test all(s -> s in (:disconnected, :cost_ratio), od_df.stop_reason)
+	@test od_df.origin_outdegree == outdegree.(Ref(g), od_df.origin)
+	@test od_df.destination_indegree == indegree.(Ref(g), od_df.destination)
+	@test all(od_df.cost_ratio[od_df.stop_reason .== :cost_ratio] .> 1.5)
+	show(stdout, od_df; allcols = true); println()
+end
+
 @testset "cracking Tests" begin
 	test_crackOptimalPaths()
 end
 
-# @testset "OD matrix Tests" begin
-#     test_OD_matrix()
-# end
+@testset "cost ratio and reachability" begin
+	test_cost_ratio_and_reachability()
+end
 
-# @testset "cellList Tests" begin
-#     test_cellList()
-# end
+@testset "early-exit Dijkstra vs Graphs.jl" begin
+	test_early_exit_dijkstra()
+end
 
-# @testset "buildSquareNetwork Tests" begin
-#     test_buildSquareNetwork()
-# end
+@testset "crackStatistics" begin
+	test_crackStatistics()
+end
 
-# @testset "buildNetworkFromTables Tests" begin
-#     test_buildNetworkFromTables()
-# end
+@testset "OD matrix Tests" begin
+    test_OD_matrix()
+end
+
+@testset "cellList Tests" begin
+    test_cellList()
+end
+
+@testset "buildSquareNetwork Tests" begin
+    test_buildSquareNetwork()
+end
+
+@testset "buildNetworkFromTables Tests" begin
+    test_buildNetworkFromTables()
+end
