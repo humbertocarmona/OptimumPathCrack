@@ -4,6 +4,7 @@ using CSV
 using DataFrames
 using Dates
 using Distributions
+using FFTW
 using Geodesy
 using Graphs
 using Random
@@ -55,6 +56,7 @@ end
 
 include("getTravelTimes.jl")
 include("buildNetworkFromTables.jl")
+include("correlatedSurface.jl")
 include("buildSquareNetwork.jl")
 include("buildCityLattice.jl")
 include("networkSummary.jl")
@@ -65,7 +67,7 @@ include("crackStatistics.jl")
 include("writeGML.jl")
 include("DisorderDist.jl")
 
-export DisorderDist, buildNetworkFromTables, buildSquareNetwork, buildCityLattice,
+export DisorderDist, buildNetworkFromTables, buildSquareNetwork, buildCityLattice, fbmSurface,
 	networkSummary, integratedRemovals,
 	cellList_lat_lon, cellList_euclidean, crackOptimalPaths, crackStatistics,
 	writeCrackStatistics, readCrackStatistics, getGoogleDirection, getMapOSM,

@@ -85,6 +85,69 @@ function test_DisorderDist()
 	@test all(e -> exp(-3.0) <= W[src(e), dst(e)] <= 1, edges(g))
 end
 
+function test_correlated_weights()
+	# surface: normalized, H = -1 uncorrelated, Hurst exponent recovered for H > 0
+	h = fbmSurface(128, 128, -1.0; rng = Xoshiro(1))
+	@test abs(sum(h) / length(h)) < 1e-10 && sum(abs2, h) / length(h) ≈ 1
+	nn(h) = sum(h .* circshift(h, (1, 0))) / length(h)
+	@test abs(nn(h)) < 0.05
+	function Hest(h)
+		x = log.(1:8)
+		y = log.([sum(abs2, circshift(h, (-r, 0)) .- h) for r in 1:8])
+		xm, ym = sum(x) / 8, sum(y) / 8
+		return sum((x .- xm) .* (y .- ym)) / sum(abs2, x .- xm) / 2
+	end
+	for H in (0.5, 0.8)
+		est = sum(Hest(fbmSurface(256, 256, H; rng = Xoshiro(s))) for s in 1:4) / 4
+		@test abs(est - H) < 0.1
+	end
+	@test_throws ArgumentError fbmSurface(8, 8, -1.5)
+
+	# network: same topology as uncorrelated, exact weight distribution, more correlation
+	# for larger H
+	nx = 40
+	g0, _, W0, _ = buildSquareNetwork(nx, nx; dist = 5.0, seed = 2)
+	corr_next = Float64[]
+	for H in (-1.0, 0.0, 0.7)
+		g, _, W, _ = buildSquareNetwork(nx, nx; dist = 5.0, seed = 2, hurst = H)
+		@test g == g0
+		w = sort([W[src(e), dst(e)] for e in edges(g) if src(e) <= nx^2 && dst(e) <= nx^2])
+		E = length(w)
+		@test w ≈ [quantile(DisorderDist(5.0), (k - 0.5) / E) for k in 1:E]
+		a = Float64[]; b = Float64[]
+		for j in 1:(nx-1), i in 1:(nx-1)
+			s1, s2 = i + nx * (j - 1), i + nx * j          # horizontal links one row apart
+			# same direction only (directions use independent surfaces)
+			for ((u, v), (x, y)) in (((s1, s1 + 1), (s2, s2 + 1)), ((s1 + 1, s1), (s2 + 1, s2)))
+				has_edge(g, u, v) && has_edge(g, x, y) && (push!(a, log(W[u, v])); push!(b, log(W[x, y])))
+			end
+		end
+		push!(corr_next, (sum(a .* b) / length(a) - sum(a) * sum(b) / length(a)^2) /
+						 sqrt((sum(abs2, a) / length(a) - (sum(a) / length(a))^2) *
+							  (sum(abs2, b) / length(b) - (sum(b) / length(b))^2)))
+	end
+	@test abs(corr_next[1]) < 0.1 && corr_next[1] < corr_next[2] < corr_next[3]
+	@test corr_next[3] > 0.8
+
+	# direction_rho = 1: the two directions of a link get adjacent ranks
+	g, _, W, _ = buildSquareNetwork(20, 20; dist = 5.0, p = 0.0, od = false, hurst = 0.5,
+		direction_rho = 1.0)
+	E = ne(g)
+	q(k) = quantile(DisorderDist(5.0), (k - 0.5) / E)
+	@test all(e -> abs(log(W[src(e), dst(e)]) - log(W[dst(e), src(e)])) <=
+				   log(q(E) / q(1)) / (E - 1) * 1.01, edges(g))
+
+	# positive weights from a distribution that can go negative; cracking works
+	g, _, W, _ = buildSquareNetwork(20, 20; dist = Normal(0.5, 0.3), hurst = 0.5)
+	@test all(e -> W[src(e), dst(e)] > 0, edges(g))
+	_, _, _, res = crackOptimalPaths(g, 401, 402, W)
+	@test res.stop_reason == :disconnected
+end
+
+@testset "correlated weights" begin
+	test_correlated_weights()
+end
+
 @testset "DisorderDist" begin
 	test_DisorderDist()
 end

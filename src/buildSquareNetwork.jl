@@ -167,7 +167,8 @@ function buildSquareNetwork_velho(nx::Int, ny::Int; p::Float64 = 0.5,
 end
 
 """
-	buildSquareNetwork(nx, ny; p = 0.5, dist, seed = 123, od = true, pbc = false)
+	buildSquareNetwork(nx, ny; p = 0.5, dist, seed = 123, od = true, pbc = false,
+					   hurst = nothing, direction_rho = 0.0)
 		-> (g, coords, weightmx, 0)
 
 Square grid of `nx × ny` nodes with random edge directions and weights.
@@ -186,6 +187,19 @@ Square grid of `nx × ny` nodes with random edge directions and weights.
   are positive, as cracking requires, but never the heaviest edge of a path and they do
   not change which path is shortest.
 - `pbc::Bool = false`: Periodic boundary in the horizontal direction.
+- `hurst = nothing`: If a number `H ≥ -1`, weights are spatially correlated. A surface
+  from `fbmSurface` with Hurst exponent `H` is sampled at each link's midpoint (on a grid
+  twice as fine as the lattice), and the values are mapped to weights by rank:
+  `w = quantile(dist, (rank - 1/2)/E)` over the `E` lattice edges. The weights then have
+  exactly the distribution `dist` (truncated at 0 if needed); only their arrangement
+  changes. `H = -1` is uncorrelated; larger `H` means longer-range correlations
+  (fractional Brownian surface for `0 < H < 1`). `nothing` draws independent weights.
+- `direction_rho = 0.0`: With `hurst`, the correlation between the surfaces used for
+  the two directions of a link (`+x`/`+y` vs `-x`/`-y`): `0` independent, `1` the same
+  surface (both directions of a two-way link get adjacent ranks, so nearly equal weights).
+
+Link directions and weights use separate random streams derived from `seed`, so the same
+`seed` gives the same topology with or without `hurst`.
 
 # Returns
 `(g, coords, weightmx, 0)`: directed graph, (lat, lon) coordinates, weight matrix, and
@@ -199,9 +213,13 @@ function buildSquareNetwork(
 	seed::Int64 = 123,
 	od::Bool = true,
 	pbc::Bool = false,
+	hurst::Union{Nothing, Real} = nothing,
+	direction_rho::Real = 0.0,
 )
 	dist isa Real && (dist = DisorderDist(dist))
-	rng = Random.Xoshiro(seed)
+	0 <= direction_rho <= 1 || throw(ArgumentError("direction_rho must be in [0, 1]"))
+	rng = Random.Xoshiro(UInt64[seed % UInt64, 1])    # topology
+	wrng = Random.Xoshiro(UInt64[seed % UInt64, 2])   # weights
 
 	nvertices = nx * ny
 	nnodes = nvertices + 2 * od
@@ -213,26 +231,51 @@ function buildSquareNetwork(
 	dy = 9.002123e-4  # Y-axis spacing
 	coords = Tuple{Float64, Float64}[]
 
-	function add_link!(s, d)
+	# Directed lattice edges: (src, dst, midpoint x, midpoint y, forward?)
+	# forward = pointing towards increasing i or j
+	lattice_edges = Tuple{Int, Int, Int, Int, Bool}[]
+	function add_link!(s, d, mx, my)
 		if p > rand(rng)            # one-way, random direction
-			rand(rng) > 0.5 && ((s, d) = (d, s))
-			add_edge!(g, s, d)
-			weightmx[s, d] = _positive_rand(rng, dist)
-		else                        # two-way, independent weights
-			add_edge!(g, s, d)
-			weightmx[s, d] = _positive_rand(rng, dist)
-			add_edge!(g, d, s)
-			weightmx[d, s] = _positive_rand(rng, dist)
+			if rand(rng) > 0.5
+				push!(lattice_edges, (d, s, mx, my, false))
+			else
+				push!(lattice_edges, (s, d, mx, my, true))
+			end
+		else                        # two-way
+			push!(lattice_edges, (s, d, mx, my, true))
+			push!(lattice_edges, (d, s, mx, my, false))
 		end
 	end
 
+	# node (i, j) sits at (2i-1, 2j-1) of the midpoint grid
 	for i in 1:nx
 		for j in 1:ny
 			push!(coords, Tuple(center + [(i - 1) * dx, (j - 1) * dy]))
 			s = ij2n(i, j, nx)
-			(i < nx || pbc) && add_link!(s, ij2n(mod1(i + 1, nx), j, nx))  # horizontal
-			j < ny && add_link!(s, ij2n(i, j + 1, nx))                    # vertical
+			(i < nx || pbc) && add_link!(s, ij2n(mod1(i + 1, nx), j, nx), 2i, 2j - 1)
+			j < ny && add_link!(s, ij2n(i, j + 1, nx), 2i - 1, 2j)
 		end
+	end
+
+	E = length(lattice_edges)
+	if hurst === nothing
+		weights = [_positive_rand(wrng, dist) for _ in 1:E]
+	else
+		h_fwd = fbmSurface(2nx, 2ny, hurst; rng = wrng)
+		h_bwd = direction_rho == 1 ? h_fwd :
+				direction_rho * h_fwd .+
+				sqrt(1 - direction_rho^2) .* fbmSurface(2nx, 2ny, hurst; rng = wrng)
+		values = [(fwd ? h_fwd : h_bwd)[mx, my] for (_, _, mx, my, fwd) in lattice_edges]
+		wdist = minimum(dist) > 0 ? dist : truncated(dist; lower = 0.0)
+		weights = Vector{Float64}(undef, E)
+		for (rank, e) in enumerate(sortperm(values))
+			weights[e] = quantile(wdist, (rank - 0.5) / E)
+		end
+		all(>(0), weights) || throw(ArgumentError("quantiles of $dist gave non-positive weights"))
+	end
+	for (k, (s, d, _, _, _)) in enumerate(lattice_edges)
+		add_edge!(g, s, d)
+		weightmx[s, d] = weights[k]
 	end
 
 	if od
