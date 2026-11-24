@@ -82,6 +82,7 @@ mutable struct DijkstraWorkspace
 	dist::Vector{Float64}
 	stamp::Vector{Int}           # node reached in this search iff stamp[v] == gen
 	settled::Vector{Int}         # node settled in this search iff settled[v] == gen
+	rank::Vector{Int}            # settle order in this search (valid if settled)
 	gen::Int
 	heap::Vector{Tuple{Float64, Int}}
 	# shortest-path DAG (tie-breaking)
@@ -90,7 +91,8 @@ mutable struct DijkstraWorkspace
 	dag::Vector{Int}
 end
 
-DijkstraWorkspace(N::Int) = DijkstraWorkspace(zeros(N), zeros(Int, N), zeros(Int, N), 0,
+DijkstraWorkspace(N::Int) = DijkstraWorkspace(zeros(N), zeros(Int, N), zeros(Int, N),
+	zeros(Int, N), 0,
 	Tuple{Float64, Int}[], zeros(Int, N), zeros(N), Int[])
 
 # Binary min-heap on (distance, node).
@@ -137,9 +139,10 @@ all `_sample_path!` needs.
 function _dijkstra_to!(ws::DijkstraWorkspace, net::CrackNetwork, removed::BitVector,
 	org::Int, dst::Int)
 	gen = (ws.gen += 1)
-	dist, stamp, settled, heap = ws.dist, ws.stamp, ws.settled, ws.heap
+	dist, stamp, settled, rank, heap = ws.dist, ws.stamp, ws.settled, ws.rank, ws.heap
 	offsets, targets, weights = net.offsets, net.targets, net.weights
 	empty!(heap)
+	n_settled = 0
 
 	@inbounds begin
 		stamp[org] = gen
@@ -147,8 +150,9 @@ function _dijkstra_to!(ws::DijkstraWorkspace, net::CrackNetwork, removed::BitVec
 		_heap_push!(heap, (0.0, org))
 		while !isempty(heap)
 			d, u = _heap_pop!(heap)
-			d > dist[u] && continue      # stale entry
+			(d > dist[u] || settled[u] == gen) && continue   # stale entry
 			settled[u] = gen
+			rank[u] = (n_settled += 1)
 			u == dst && return d
 			for e in offsets[u]:(offsets[u+1]-1)
 				removed[e] && continue
@@ -165,13 +169,18 @@ function _dijkstra_to!(ws::DijkstraWorkspace, net::CrackNetwork, removed::BitVec
 	return Inf
 end
 
-# Edge e = (u -> v) lies on a shortest path to v (within tolerance).
+# Edge e = (u -> v) lies on a shortest path to v (within tolerance). u must also have
+# been settled before v: with weights far below the float resolution of the path cost
+# (very strong disorder), dist[u] + w can equal dist[v] around a cycle, and the
+# tolerance alone would let the backward walk loop forever. Settle order is a
+# topological order of the true shortest-path DAG, so no genuine predecessor is lost.
 @inline function _tight(ws::DijkstraWorkspace, net::CrackNetwork, removed::BitVector,
 	e::Int, v::Int)
 	@inbounds begin
 		removed[e] && return false
 		u = net.srcs[e]
 		ws.settled[u] == ws.gen || return false
+		ws.rank[u] < ws.rank[v] || return false
 		return ws.dist[u] + net.weights[e] <= ws.dist[v] * (1 + TIE_RTOL)
 	end
 end
@@ -213,9 +222,9 @@ function _sample_path!(path::Vector{Int}, ws::DijkstraWorkspace, net::CrackNetwo
 		v != org && n_tight > 1 && (ties = true)
 	end
 
-	# 2. Count shortest paths from org to each DAG node, in order of distance.
+	# 2. Count shortest paths from org to each DAG node, in settle (topological) order.
 	if ties
-		sort!(dag; by = v -> dist[v])
+		sort!(dag; by = v -> ws.rank[v])
 		@inbounds for v in dag
 			if v == org
 				sigma[v] = 1.0

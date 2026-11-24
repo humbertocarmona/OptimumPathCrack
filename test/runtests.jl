@@ -469,6 +469,20 @@ end
 	test_buildCityLattice()
 end
 
+@testset "very strong disorder terminates" begin
+	# Weights spanning far more than Float64 resolution used to create cycles of
+	# "tight" edges, so the backward path walk never ended.
+	for β in (50.0, 200.0)
+		g, _, W, _ = buildSquareNetwork(16, 16; p = 0.0, dist = β, seed = 7, od = true)
+		net = OptimumPathCrack.CrackNetwork(g, W)
+		r = OptimumPathCrack._crack(net, 257, 258; rng = Random.Xoshiro(1))
+		@test r.stop_reason == :disconnected
+		@test 16 <= length(r.removed) <= ne(g)
+		# every removed edge was on a simple path: no edge removed twice
+		@test allunique(r.removed)
+	end
+end
+
 @testset "tie breaking" begin
 	test_tie_breaking()
 end
