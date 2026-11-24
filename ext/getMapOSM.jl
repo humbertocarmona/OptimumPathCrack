@@ -1,4 +1,4 @@
-function getMapOSM(;place::String="",
+function OptimumPathCrack.getMapOSM(;place::String="",
                     location::Tuple{Float64,Float64}=(-3.7327, -38.5270),
                     radius::Float64=500.0,
                     nfile::String="data/nodes.csv",

@@ -1,26 +1,38 @@
 #=
 Optimum path crack with an early-exit Dijkstra.
 
-The network is stored once as flat (CSR) out-edge arrays (`CrackNetwork`), which are
-read-only and can be shared between threads. Each crack keeps its own `removed` mask
-over edge ids instead of copying the graph, and its own `DijkstraWorkspace`. The
-search stops as soon as the destination is settled, and only the nodes it touched
-are reset (generation stamps), so each search costs time in proportion to the
-region it explores, not the whole network.
+The network is stored once as flat (CSR) out- and in-edge arrays (`CrackNetwork`),
+which are read-only and can be shared between threads. Each crack keeps its own
+`removed` mask over edge ids instead of copying the graph, and its own
+`DijkstraWorkspace`. The search stops as soon as the destination is settled, and only
+the nodes it touched are reset (generation stamps), so each search costs time in
+proportion to the region it explores, not the whole network.
+
+Ties are broken at random:
+- among equal-cost shortest paths, one is drawn uniformly over all of them (paths are
+  counted on the shortest-path DAG, then sampled backwards from the destination);
+- among equal-weight heaviest edges on the chosen path, one is drawn uniformly.
+Path costs are compared with a relative tolerance `TIE_RTOL`, since costs are sums of
+floating-point weights. Weights must be positive.
 =#
+
+const TIE_RTOL = 1e-10
 
 """
 	CrackNetwork(g::SimpleDiGraph, weight_matrix)
 
 Flat, read-only representation of `g` for cracking. Edge `e` goes from `srcs[e]` to
 `targets[e]` with weight `weights[e]`; the out-edges of node `u` are
-`offsets[u]:offsets[u+1]-1`, in the order of `outneighbors(g, u)`.
+`offsets[u]:offsets[u+1]-1`, in the order of `outneighbors(g, u)`, and the in-edges of
+`v` are `in_edges[in_offsets[v]:in_offsets[v+1]-1]`.
 """
 struct CrackNetwork
 	offsets::Vector{Int}
 	srcs::Vector{Int}
 	targets::Vector{Int}
 	weights::Vector{Float64}
+	in_offsets::Vector{Int}
+	in_edges::Vector{Int}
 end
 
 function CrackNetwork(g::SimpleDiGraph, weight_matrix::SparseMatrixCSC{Float64, Int64})
@@ -38,7 +50,23 @@ function CrackNetwork(g::SimpleDiGraph, weight_matrix::SparseMatrixCSC{Float64, 
 		end
 	end
 	offsets[N+1] = e
-	return CrackNetwork(offsets, srcs, targets, weights)
+	any(w -> !(w > 0), weights) && throw(ArgumentError("edge weights must be positive"))
+
+	# in-edges, grouped by target
+	in_offsets = zeros(Int, N + 1)
+	for v in targets
+		in_offsets[v+1] += 1
+	end
+	in_offsets[1] = 1
+	cumsum!(in_offsets, in_offsets)
+	in_edges = Vector{Int}(undef, E)
+	fill_pos = copy(in_offsets)
+	for e in 1:E
+		v = targets[e]
+		in_edges[fill_pos[v]] = e
+		fill_pos[v] += 1
+	end
+	return CrackNetwork(offsets, srcs, targets, weights, in_offsets, in_edges)
 end
 
 Graphs.nv(net::CrackNetwork) = length(net.offsets) - 1
@@ -47,16 +75,20 @@ Graphs.ne(net::CrackNetwork) = length(net.targets)
 # Per-crack scratch space; not shared between threads.
 mutable struct DijkstraWorkspace
 	dist::Vector{Float64}
-	parent_edge::Vector{Int}
-	stamp::Vector{Int}           # node is valid in this search iff stamp[v] == gen
+	stamp::Vector{Int}           # node reached in this search iff stamp[v] == gen
+	settled::Vector{Int}         # node settled in this search iff settled[v] == gen
 	gen::Int
 	heap::Vector{Tuple{Float64, Int}}
+	# shortest-path DAG (tie-breaking)
+	in_dag::Vector{Int}          # node in the DAG iff in_dag[v] == gen
+	sigma::Vector{Float64}       # number of shortest paths org -> v
+	dag::Vector{Int}
 end
 
 DijkstraWorkspace(N::Int) = DijkstraWorkspace(zeros(N), zeros(Int, N), zeros(Int, N), 0,
-	Tuple{Float64, Int}[])
+	Tuple{Float64, Int}[], zeros(Int, N), zeros(N), Int[])
 
-# Binary min-heap on (distance, node); ties are broken by node index.
+# Binary min-heap on (distance, node).
 function _heap_push!(h::Vector{Tuple{Float64, Int}}, x::Tuple{Float64, Int})
 	push!(h, x)
 	i = length(h)
@@ -94,23 +126,24 @@ end
 	_dijkstra_to!(ws, net, removed, org, dst) -> Float64
 
 Shortest-path cost from `org` to `dst` ignoring edges with `removed[e]`, or `Inf`.
-Stops when `dst` is settled; the path can then be read from `ws.parent_edge`.
+Stops when `dst` is settled. Every node closer than `dst` is then settled, which is
+all `_sample_path!` needs.
 """
 function _dijkstra_to!(ws::DijkstraWorkspace, net::CrackNetwork, removed::BitVector,
 	org::Int, dst::Int)
 	gen = (ws.gen += 1)
-	dist, parent_edge, stamp, heap = ws.dist, ws.parent_edge, ws.stamp, ws.heap
+	dist, stamp, settled, heap = ws.dist, ws.stamp, ws.settled, ws.heap
 	offsets, targets, weights = net.offsets, net.targets, net.weights
 	empty!(heap)
 
 	@inbounds begin
 		stamp[org] = gen
 		dist[org] = 0.0
-		parent_edge[org] = 0
 		_heap_push!(heap, (0.0, org))
 		while !isempty(heap)
 			d, u = _heap_pop!(heap)
 			d > dist[u] && continue      # stale entry
+			settled[u] = gen
 			u == dst && return d
 			for e in offsets[u]:(offsets[u+1]-1)
 				removed[e] && continue
@@ -119,7 +152,6 @@ function _dijkstra_to!(ws::DijkstraWorkspace, net::CrackNetwork, removed::BitVec
 				if stamp[v] != gen || nd < dist[v]
 					stamp[v] = gen
 					dist[v] = nd
-					parent_edge[v] = e
 					_heap_push!(heap, (nd, v))
 				end
 			end
@@ -128,8 +160,102 @@ function _dijkstra_to!(ws::DijkstraWorkspace, net::CrackNetwork, removed::BitVec
 	return Inf
 end
 
+# Edge e = (u -> v) lies on a shortest path to v (within tolerance).
+@inline function _tight(ws::DijkstraWorkspace, net::CrackNetwork, removed::BitVector,
+	e::Int, v::Int)
+	@inbounds begin
+		removed[e] && return false
+		u = net.srcs[e]
+		ws.settled[u] == ws.gen || return false
+		return ws.dist[u] + net.weights[e] <= ws.dist[v] * (1 + TIE_RTOL)
+	end
+end
+
 """
-	_crack(net, org, dst; nMaxRem = 0, maxCostRatio = Inf, record_paths = true)
+	_sample_path!(path, ws, net, removed, org, dst, rng)
+
+After `_dijkstra_to!` reached `dst`, fills `path` with the edge ids of one shortest
+path, from `dst` back to `org`, drawn uniformly among all shortest paths.
+"""
+function _sample_path!(path::Vector{Int}, ws::DijkstraWorkspace, net::CrackNetwork,
+	removed::BitVector, org::Int, dst::Int, rng::AbstractRNG)
+	gen = ws.gen
+	in_dag, sigma, dag, dist = ws.in_dag, ws.sigma, ws.dag, ws.dist
+	in_offsets, in_edges, srcs = net.in_offsets, net.in_edges, net.srcs
+	empty!(path)
+
+	# 1. Collect the nodes that reach dst through tight edges (the shortest-path DAG).
+	#    Without ties this is just the path itself.
+	empty!(dag)
+	push!(dag, dst)
+	in_dag[dst] = gen
+	k = 1
+	ties = false
+	@inbounds while k <= length(dag)
+		v = dag[k]
+		k += 1
+		n_tight = 0
+		for p in in_offsets[v]:(in_offsets[v+1]-1)
+			e = in_edges[p]
+			_tight(ws, net, removed, e, v) || continue
+			n_tight += 1
+			u = srcs[e]
+			if in_dag[u] != gen
+				in_dag[u] = gen
+				push!(dag, u)
+			end
+		end
+		v != org && n_tight > 1 && (ties = true)
+	end
+
+	# 2. Count shortest paths from org to each DAG node, in order of distance.
+	if ties
+		sort!(dag; by = v -> dist[v])
+		@inbounds for v in dag
+			if v == org
+				sigma[v] = 1.0
+				continue
+			end
+			s = 0.0
+			for p in in_offsets[v]:(in_offsets[v+1]-1)
+				e = in_edges[p]
+				_tight(ws, net, removed, e, v) && (s += sigma[srcs[e]])
+			end
+			sigma[v] = s
+		end
+	end
+
+	# 3. Walk back from dst, choosing each predecessor with probability σ[u]/σ[v].
+	v = dst
+	@inbounds while v != org
+		chosen = 0
+		if ties
+			r = rand(rng) * sigma[v]
+			for p in in_offsets[v]:(in_offsets[v+1]-1)
+				e = in_edges[p]
+				_tight(ws, net, removed, e, v) || continue
+				chosen = e
+				r -= sigma[srcs[e]]
+				r < 0 && break
+			end
+		else
+			for p in in_offsets[v]:(in_offsets[v+1]-1)
+				e = in_edges[p]
+				if _tight(ws, net, removed, e, v)
+					chosen = e
+					break
+				end
+			end
+		end
+		push!(path, chosen)
+		v = srcs[chosen]
+	end
+	return path
+end
+
+"""
+	_crack(net, org, dst; nMaxRem = 0, maxCostRatio = Inf, record_paths = true,
+		   rng = Xoshiro(1))
 
 Core crack loop on a `CrackNetwork`. Returns a named tuple
 `(removed, path_first, path_costs, stop_reason)`, where `removed` lists the removed edge
@@ -137,7 +263,8 @@ ids in order, and `path_first[e] = k` if edge `e` first appeared on the `k`-th p
 (empty unless `record_paths`). See `crackOptimalPaths` for the other fields.
 """
 function _crack(net::CrackNetwork, org::Int, dst::Int;
-	nMaxRem::Int = 0, maxCostRatio::Float64 = Inf, record_paths::Bool = true)
+	nMaxRem::Int = 0, maxCostRatio::Float64 = Inf, record_paths::Bool = true,
+	rng::AbstractRNG = Random.Xoshiro(1))
 
 	nMaxRem == 0 && (nMaxRem = ne(net))
 	removed_list = Int[]
@@ -150,6 +277,7 @@ function _crack(net::CrackNetwork, org::Int, dst::Int;
 
 	ws = DijkstraWorkspace(nv(net))
 	removed = falses(ne(net))
+	path = Int[]
 	cost = _dijkstra_to!(ws, net, removed, org, dst)
 	isinf(cost) && return result(:no_path)
 	first_cost = cost
@@ -158,17 +286,20 @@ function _crack(net::CrackNetwork, org::Int, dst::Int;
 	while true
 		length(removed_list) >= nMaxRem && return result(:max_removals)
 
-		# Walk the path back from dst; keep the heaviest edge (ties: nearest to dst)
+		_sample_path!(path, ws, net, removed, org, dst, rng)
+
+		# Heaviest edge on the path; uniform among equal weights (reservoir sampling)
 		k = length(removed_list) + 1
-		emax, wmax = 0, -Inf
-		v = dst
-		while v != org
-			e = ws.parent_edge[v]
+		emax, wmax, n_max = 0, -Inf, 0
+		for e in path
 			record_paths && get!(path_first, e, k)
-			if net.weights[e] > wmax
-				emax, wmax = e, net.weights[e]
+			w = net.weights[e]
+			if w > wmax
+				emax, wmax, n_max = e, w, 1
+			elseif w == wmax
+				n_max += 1
+				rand(rng, 1:n_max) == 1 && (emax = e)
 			end
-			v = net.srcs[e]
 		end
 
 		removed[emax] = true
@@ -184,7 +315,8 @@ end
 """
 	crackOptimalPaths(g::SimpleDiGraph, org::Int64, dst::Int64,
 					  weight_matrix::SparseMatrixCSC{Float64, Int64};
-					  nMaxRem::Int64 = 0, maxCostRatio::Float64 = Inf)
+					  nMaxRem::Int64 = 0, maxCostRatio::Float64 = Inf,
+					  rng::AbstractRNG = Xoshiro(1))
 
 Iteratively finds the shortest path from `org` to `dst` and removes its
 highest-weight edge, on a copy of `g`.
@@ -193,11 +325,15 @@ highest-weight edge, on a copy of `g`.
 - `g::SimpleDiGraph`: The input directed graph (not modified).
 - `org::Int64`: The origin node.
 - `dst::Int64`: The destination node.
-- `weight_matrix::SparseMatrixCSC{Float64, Int64}`: Edge weights.
+- `weight_matrix::SparseMatrixCSC{Float64, Int64}`: Edge weights (must be positive).
 - `nMaxRem::Int64` (optional): Maximum number of edges to remove. `0` means `ne(g)`.
 - `maxCostRatio::Float64` (optional): Stop when the cost of the current shortest
   path exceeds `maxCostRatio` times the cost of the first shortest path. The path
   that triggers the stop is not cracked. Defaults to `Inf` (no limit).
+- `rng::AbstractRNG` (optional): Random generator for tie-breaking. When several
+  shortest paths have the same cost, one is drawn uniformly among them; when several
+  edges on the path share the largest weight, one is drawn uniformly. The default is
+  a fresh `Xoshiro(1)`, so repeated calls give the same result.
 
 # Returns
 - `gr::SimpleDiGraph`: The cracked copy of `g`.
@@ -210,16 +346,17 @@ highest-weight edge, on a copy of `g`.
   stop). `stop_reason` is one of `:disconnected` (no path left), `:cost_ratio`,
   `:max_removals`, `:no_path` (no path from the start) or `:same_node`.
 
-For many OD pairs on the same network, build a `CrackNetwork` once and use
-`crackStatistics`, which avoids rebuilding it for every pair.
+For many OD pairs on the same network use `crackStatistics`, which builds the
+`CrackNetwork` once and runs the pairs in parallel.
 """
 function crackOptimalPaths(g::SimpleDiGraph, org::Int64, dst::Int64,
 	weight_matrix::SparseMatrixCSC{Float64, Int64};
 	nMaxRem::Int64 = 0,
-	maxCostRatio::Float64 = Inf)
+	maxCostRatio::Float64 = Inf,
+	rng::AbstractRNG = Random.Xoshiro(1))
 
 	net = CrackNetwork(g, weight_matrix)
-	res = _crack(net, org, dst; nMaxRem = nMaxRem, maxCostRatio = maxCostRatio)
+	res = _crack(net, org, dst; nMaxRem = nMaxRem, maxCostRatio = maxCostRatio, rng = rng)
 
 	N = nv(g)
 	gr = copy(g)

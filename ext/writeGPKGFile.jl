@@ -1,4 +1,4 @@
-function writeGPKGFile(
+function OptimumPathCrack.writeGPKGFile(
 	g::SimpleDiGraph,
 	coords::Vector{Tuple{Float64, Float64}},
 	distance_matrix::SparseArrays.SparseMatrixCSC{Float64, Int64},
@@ -9,7 +9,7 @@ function writeGPKGFile(
 	filename = "test")
 	n_removed = size(findnz(removed_matrix)[3], 1)
 
-	geom_edges = LineString{2, Float32}[]
+	geom_edges = GI.Wrappers.LineString[]
 	dists_edges = Float64[]
 	weight_edges = Float64[]
 	paths_edges = Int[]
@@ -22,7 +22,7 @@ function writeGPKGFile(
 		xy_s = swap(coords[s])
 		xy_d = swap(coords[d])
 
-		line = LineString([Point2f(xy_s), Point2f(xy_d)])
+		line = GI.Wrappers.LineString([xy_s, xy_d])
 		push!(geom_edges, line)
 		push!(dists_edges, distance_matrix[s, d])
 		push!(weight_edges, weight_matrix[s, d])
@@ -32,11 +32,11 @@ function writeGPKGFile(
 		end
 	end
 
-	geom_nodes = Point2f[]
+	geom_nodes = GI.Wrappers.Point[]
 	od_nodes = String[]
 	for n in vertices(g)
 		xy = swap(coords[n])
-		push!(geom_nodes, Point2f(xy))
+		push!(geom_nodes, GI.Wrappers.Point(xy))
 		if n == od[1]
 			push!(od_nodes, "origin")
 		elseif n == od[2]

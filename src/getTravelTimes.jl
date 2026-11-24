@@ -25,7 +25,7 @@ function getTravelTimes(g::SimpleDiGraph,
         s, d = edge.src, edge.dst
         origin = coords[s]
         destination = coords[d]
-        datajson, output = OPC.getGoogleDirection(origin, destination, departure, key)
+        datajson, output = getGoogleDirection(origin, destination, departure, key)
         travelTimes[(s,d)] = output["travelTimeSec"]
 
         datadic[(s,d)] = datajson

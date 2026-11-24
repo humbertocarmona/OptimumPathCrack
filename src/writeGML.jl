@@ -14,8 +14,8 @@ function writeGML(g::SimpleDiGraph,
         write(file,"  Creator \"Gephi\"\n")
         write(file,"  directed 1\n")
         for i in 1:nv(g)
-            x = coord[i][2]
-            y = coord[i][1]
+            x = coords[i][2]
+            y = coords[i][1]
             write(file,"  node\n")
             write(file,"  [\n")
             write(file,"    id $(i-1)\n")
@@ -54,5 +54,5 @@ function writeGML(g::SimpleDiGraph,
 
         write(file,"]")
     end
-    filename
+    outfile
 end

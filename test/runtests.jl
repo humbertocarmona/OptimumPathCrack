@@ -1,7 +1,7 @@
 using OptimumPathCrack
-using Test
 using Test, CSV, DataFrames, Graphs, SparseArrays
 using Random, Distributions
+using GeoDataFrames   # loads the writeGPKGFile extension
 
 function test_buildNetworkFromTables()
 	# Create temporary CSV files for testing
@@ -202,6 +202,85 @@ function test_crackStatistics()
 	@test od_df.destination_indegree == indegree.(Ref(g), od_df.destination)
 	@test all(od_df.cost_ratio[od_df.stop_reason .== :cost_ratio] .> 1.5)
 	show(stdout, od_df; allcols = true); println()
+end
+
+function small_graph(edge_list)
+	n = maximum(max(s, d) for (s, d, _) in edge_list)
+	g = SimpleDiGraph(n)
+	W = spzeros(n, n)
+	for (s, d, w) in edge_list
+		add_edge!(g, s, d)
+		W[s, d] = w
+	end
+	return g, W
+end
+
+function test_tie_breaking()
+	# Three equal-cost (3.0) paths 1 -> 5: via 2-4, via 3-4, and via 6.
+	# A uniform draw picks each with probability 1/3 (a random parent at each step
+	# would pick the path via 6 half of the time).
+	g, W = small_graph([(1, 2, 1.0), (1, 3, 1.0), (2, 4, 1.0), (3, 4, 1.0), (4, 5, 1.0),
+		(1, 6, 1.5), (6, 5, 1.5)])
+	n = 6000
+	via = zeros(Int, 3)
+	rem_on_6 = zeros(Int, 2)
+	for s in 1:n
+		_, rem, path, _ = crackOptimalPaths(g, 1, 5, W; nMaxRem = 1, rng = Xoshiro(s))
+		path[1, 2] == 1 && (via[1] += 1)
+		path[1, 3] == 1 && (via[2] += 1)
+		if path[1, 6] == 1
+			via[3] += 1
+			rem[1, 6] == 1 && (rem_on_6[1] += 1)
+			rem[6, 5] == 1 && (rem_on_6[2] += 1)
+		end
+	end
+	@test sum(via) == n
+	@test all(abs.(via ./ n .- 1 / 3) .< 0.03)
+	# the two edges of the via-6 path tie at weight 1.5: each removed half the time
+	@test abs(rem_on_6[1] / via[3] - 0.5) < 0.05
+
+	# Equal-weight edges on a single path: each removed with probability 1/3
+	g, W = small_graph([(1, 2, 2.0), (2, 3, 2.0), (3, 4, 2.0)])
+	counts = zeros(Int, 3)
+	for s in 1:n
+		_, rem, _, _ = crackOptimalPaths(g, 1, 4, W; nMaxRem = 1, rng = Xoshiro(s))
+		counts[findfirst(k -> rem[k, k+1] == 1, 1:3)] += 1
+	end
+	@test all(abs.(counts ./ n .- 1 / 3) .< 0.03)
+
+	# Same rng seed -> same result
+	g, coords, _, weight_matrix, _ = load_boston()
+	a = crackOptimalPaths(g, 817, 10663, weight_matrix; rng = Xoshiro(5))
+	b = crackOptimalPaths(g, 817, 10663, weight_matrix; rng = Xoshiro(5))
+	@test a[2] == b[2] && a[4] == b[4]
+end
+
+function test_statistics_io()
+	g, coords, distance_matrix, weight_matrix, _ = load_boston()
+	edges_df, od_df = crackStatistics(g, coords, distance_matrix, weight_matrix,
+		[1000.0, 2000.0]; n_od_pairs = 4, seed = 3)
+	@test metadata(od_df, "seed") == 3
+	@test metadata(edges_df, "distances") == [1000.0, 2000.0]
+	@test isinf(metadata(od_df, "maxCostRatio"))
+	mktempdir() do dir
+		prefix = joinpath(dir, "run", "boston")
+		files = writeCrackStatistics(prefix, edges_df, od_df;
+			extra = Dict("edges_file" => "boston-edges-4h.csv"))
+		@test all(isfile, files)
+		e2, o2, params = readCrackStatistics(prefix)
+		@test e2 == edges_df
+		@test isequal(o2, od_df)
+		@test params["seed"] == 3 && params["extra"]["edges_file"] == "boston-edges-4h.csv"
+		@test metadata(o2, "n_edges") == ne(g)
+	end
+end
+
+@testset "tie breaking" begin
+	test_tie_breaking()
+end
+
+@testset "statistics IO" begin
+	test_statistics_io()
 end
 
 @testset "cracking Tests" begin
