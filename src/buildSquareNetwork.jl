@@ -15,7 +15,7 @@ function buildSquareNetwork_velho(nx::Int, ny::Int; p::Float64 = 0.5,
 	"""
 		nx, ny: network size
 		p: probability of bidirect edges
-		dist: distribution to generate weights - DesorderDist is defined here,
+		dist: distribution to generate weights - DisorderDist is defined here,
 			  but it can be anyone defined in Distributions
 
 		add one abobe the top row and one below to the bottom row

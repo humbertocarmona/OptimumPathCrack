@@ -275,6 +275,59 @@ function test_statistics_io()
 	end
 end
 
+function test_buildCityLattice()
+	nx, ny = 20, 16
+	g, coords, dm, wm, roads = buildCityLattice(nx, ny; oneway_fraction = 0.6,
+		alternation = 1.0, arterial_fraction = 0.2, seed = 3)
+	s = networkSummary(g, wm)
+	@test s.mean_degree == 4.0 && s.scc_fraction == 1.0 && s.imbalance == 0.0
+	@test length(coords) == nv(g) == nx * ny
+	@test all(e -> dm[src(e), dst(e)] == 100.0 && wm[src(e), dst(e)] > 0, edges(g))
+
+	# every block of a one-way road points in the road's direction
+	node(i, j) = i + nx * (j - 1)
+	for r in eachrow(roads)
+		r.oneway || continue
+		for k in 1:(r.orientation == :row ? nx : ny)
+			a, b = r.orientation == :row ? (node(k, r.index), node(mod1(k + 1, nx), r.index)) :
+				   (node(r.index, k), node(r.index, mod1(k + 1, ny)))
+			r.direction == 1 ? (@test has_edge(g, a, b) && !has_edge(g, b, a)) :
+			(@test has_edge(g, b, a) && !has_edge(g, a, b))
+		end
+	end
+	# arterials two-way; alternation = 1 alternates consecutive one-way roads
+	@test all(.!roads.oneway[roads.arterial])
+	for o in (:row, :column)
+		d = filter(r -> r.orientation == o && r.oneway, roads).direction
+		@test all(d[1:(end-1)] .== .-d[2:end])
+	end
+	@test metadata(roads, "alternation") == 1.0
+
+	# alternation = 0: all one-way roads of an orientation share a direction
+	_, _, _, _, roads0 = buildCityLattice(nx, ny; oneway_fraction = 1.0, alternation = 0.0)
+	for o in (:row, :column)
+		@test length(unique(filter(r -> r.orientation == o && r.oneway, roads0).direction)) == 1
+	end
+
+	# target degree is exact; arterials are never cut
+	g3, _, _, _, roads3 = buildCityLattice(nx, ny; mean_degree = 3.2, arterial_fraction = 0.25)
+	@test networkSummary(g3).mean_degree ≈ 3.2
+	for r in eachrow(filter(r -> r.arterial && r.orientation == :row, roads3)), i in 1:nx
+		@test has_edge(g3, node(i, r.index), node(mod1(i + 1, nx), r.index))
+	end
+	@test_throws ArgumentError buildCityLattice(nx, ny; mean_degree = 4.5)
+
+	# same seed -> same network; it plugs into crackStatistics
+	@test buildCityLattice(nx, ny; seed = 9)[4] == buildCityLattice(nx, ny; seed = 9)[4]
+	_, od = crackStatistics(g, coords, dm, wm, [300.0, 600.0]; n_od_pairs = 10)
+	R, per = integratedRemovals(od)
+	@test nrow(per) == 2 && R ≈ 300 * (per.mean[1] + per.mean[2]) / 2
+end
+
+@testset "city lattice" begin
+	test_buildCityLattice()
+end
+
 @testset "tie breaking" begin
 	test_tie_breaking()
 end

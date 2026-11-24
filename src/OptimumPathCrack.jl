@@ -57,6 +57,8 @@ end
 include("getTravelTimes.jl")
 include("buildNetworkFromTables.jl")
 include("buildSquareNetwork.jl")
+include("buildCityLattice.jl")
+include("networkSummary.jl")
 include("cellList.jl")
 include("create_ODs.jl")
 include("crackOptimalPaths.jl")
@@ -64,7 +66,8 @@ include("crackStatistics.jl")
 include("writeGML.jl")
 include("DisorderDist.jl")
 
-export DisorderDist, rand, buildNetworkFromTables, buildSquareNetwork,
+export DisorderDist, rand, buildNetworkFromTables, buildSquareNetwork, buildCityLattice,
+	networkSummary, integratedRemovals,
 	cellList_lat_lon, cellList_euclidean, crackOptimalPaths, crackStatistics,
 	writeCrackStatistics, readCrackStatistics, getGoogleDirection, getMapOSM,
 	getTravelTimes, create_ODs, writeGML, writeGPKGFile
