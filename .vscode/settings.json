@@ -1,9 +1,20 @@
 {
     "cSpell.words": [
         "distmx",
+        "dlat",
+        "dlon",
+        "kwargs",
+        "lognormal",
+        "Lognormal",
+        "neighbours",
         "nnodes",
         "nvertices",
+        "oneway",
+        "randperm",
+        "spzeros",
         "testset",
-        "weightmx"
+        "twoway",
+        "weightmx",
+        "Xoshiro"
     ]
 }
