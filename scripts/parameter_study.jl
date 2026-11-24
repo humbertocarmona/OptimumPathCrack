@@ -34,7 +34,8 @@ const POSITIONAL = filter(a -> !startswith(a, "--"), ARGS)
 const OUTDIR = isempty(POSITIONAL) ?
 			   (QUICK ? "results/parameter_study_quick" : "results/parameter_study") : POSITIONAL[1]
 
-# Parameters varied, with their ranges (Latin hypercube, uniform within the range)
+# Parameters varied, with their ranges (Latin hypercube). Uniform within the range, or
+# uniform in log for ranges marked :log.
 const PARAMS = [
 	:oneway_fraction => (0.0, 1.0),    # share of local roads that are one-way
 	:alternation => (0.0, 1.0),        # P(next one-way road runs opposite); 0.5 = random
@@ -42,20 +43,25 @@ const PARAMS = [
 	:arterial_fraction => (0.0, 0.3),  # share of roads that are arterials
 	:arterial_speedup => (1.0, 3.0),   # arterial block time = local / speedup
 	:road_cv => (0.0, 0.8),            # weight variation between roads
-	:segment_cv => (0.0, 0.8),         # weight variation along a road
+	:beta => (0.5, 20.0, :log),        # disorder of local blocks (Boston speeds: ≈ 1.7)
+	:hurst => (-1.0, 0.8),             # spatial correlation of disorder (-1: none)
 ]
 
 # Fixed lattice settings
 const FIXED = (arterials_twoway = true, arterial_segment_cv = 0.02, pbc = true,
 	block = 100.0, weight_mean = 1.0)
 
-const N_SETTINGS = QUICK ? 6 : 300            # parameter settings
-const N_SEEDS = 2                             # network realizations per setting
-const NX = QUICK ? 40 : 80                    # lattice side (NX * block meters)
-const DISTANCES = QUICK ? [500.0, 1000.0, 1500.0] : [500.0, 1000.0, 1500.0, 2000.0, 3000.0]
-const N_OD_PAIRS = QUICK ? 30 : 100           # OD pairs per distance and network
-const COST_RATIOS = [2.0, 1.5, 1.2]           # cost caps evaluated after the run
-const SAVE_EDGES = !QUICK                     # keep per-edge tables (removed-edge stats)
+const N_SETTINGS = QUICK ? 6 : 200            # parameter settings
+const N_SEEDS = QUICK ? 2 : 3                 # network realizations per setting
+const NX = QUICK ? 64 : 256                   # lattice side (NX * block meters)
+const DISTANCES = QUICK ? [500.0, 1000.0, 2000.0] : [500.0, 1000.0, 2000.0, 4000.0, 8000.0]
+const N_OD_PAIRS = QUICK ? 20 : 50            # OD pairs per distance and network
+# Cracking stops at disconnection or when the path costs more than MAX_COST_RATIO × the
+# first path. Inf = always to disconnection (slow for strong disorder: hundreds of
+# removals per pair at beta ≳ 5). R_mean is the mean removals with this stopping rule.
+const MAX_COST_RATIO = Inf
+const COST_RATIOS = filter(<(MAX_COST_RATIO), [3.0, 2.0, 1.5, 1.2])  # caps evaluated after the run
+const SAVE_EDGES = false                      # keep per-edge tables (large at this size)
 const DESIGN_SEED = 2026
 
 @assert maximum(DISTANCES) < NX * FIXED.block / 2 "distances must stay below half the torus size"
@@ -64,9 +70,11 @@ const DESIGN_SEED = 2026
 """Latin hypercube: n points, each parameter stratified into n equal bins."""
 function latin_hypercube(n, params; rng)
 	design = DataFrame(setting = 1:n)
-	for (name, (lo, hi)) in params
+	for (name, range) in params
+		lo, hi = range[1], range[2]
 		u = (randperm(rng, n) .- rand(rng, n)) ./ n
-		design[!, name] = lo .+ (hi - lo) .* u
+		design[!, name] = length(range) == 3 && range[3] == :log ?
+						  exp.(log(lo) .+ (log(hi) - log(lo)) .* u) : lo .+ (hi - lo) .* u
 	end
 	return design
 end
@@ -93,7 +101,7 @@ function run_one(setting::DataFrameRow, rep::Int)
 	g, coords, dm, wm, _ = buildCityLattice(NX, NX; kwargs..., seed = seed)
 	net = networkSummary(g, wm)
 	edges_df, od_df = crackStatistics(g, coords, dm, wm, DISTANCES;
-		n_od_pairs = N_OD_PAIRS, seed = seed)
+		n_od_pairs = N_OD_PAIRS, seed = seed, maxCostRatio = MAX_COST_RATIO)
 
 	# columns in a fixed order, so rows can be appended to the CSV
 	row = Pair{Symbol, Any}[:run_id => run_id, :setting => setting.setting, :rep => rep,
@@ -133,8 +141,9 @@ function main()
 	open(joinpath(OUTDIR, "study.toml"), "w") do io
 		TOML.print(io, Dict("n_settings" => N_SETTINGS, "n_seeds" => N_SEEDS, "nx" => NX,
 			"distances" => DISTANCES, "n_od_pairs" => N_OD_PAIRS,
-			"cost_ratios" => COST_RATIOS, "design_seed" => DESIGN_SEED,
-			"ranges" => Dict(string(k) => collect(v) for (k, v) in PARAMS),
+			"cost_ratios" => COST_RATIOS, "max_cost_ratio" => MAX_COST_RATIO,
+			"design_seed" => DESIGN_SEED,
+			"ranges" => Dict(string(k) => string.(collect(v)) for (k, v) in PARAMS),
 			"fixed" => Dict(string(k) => v for (k, v) in pairs(FIXED)),
 			"threads" => Threads.nthreads()))
 	end

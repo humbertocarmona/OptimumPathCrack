@@ -16,6 +16,10 @@ reports:
   - the same regression on the *measured* network structure (`net_*` columns) instead
     of the generator settings.
 
+Responses are R_mean (mean removals per pair, with the study's stopping rule) and the
+cost-capped versions R_mean_cap*. Per-distance means (removed_L*) are in summary.csv
+for looking at how the effects change with L.
+
 Usage (from the package root):
 	julia --project=scripts scripts/analyze_study.jl [study_dir]
 Writes `analysis_<response>.csv` files into the study directory.
@@ -25,10 +29,12 @@ using CSV, DataFrames, LinearAlgebra, Statistics, Printf
 
 const DIR = isempty(ARGS) ? "results/parameter_study" : ARGS[1]
 
+# beta enters on a log scale (log_beta is added when the summary is read)
 const DESIGN_PARAMS = [:oneway_fraction, :alternation, :mean_degree, :arterial_fraction,
-	:arterial_speedup, :road_cv, :segment_cv]
+	:arterial_speedup, :road_cv, :log_beta, :hurst]
 const MEASURED = [:net_mean_degree, :net_oneway_fraction, :net_dead_end_fraction,
-	:net_scc_fraction, :net_weight_cv, :alternation, :arterial_fraction, :arterial_speedup]
+	:net_scc_fraction, :net_equivalent_beta, :hurst, :alternation, :arterial_fraction,
+	:arterial_speedup]
 
 zscore(x) = (x .- mean(x)) ./ std(x)
 ranks(x) = invperm(sortperm(x))
@@ -101,6 +107,7 @@ end
 
 function main()
 	df = CSV.read(joinpath(DIR, "summary.csv"), DataFrame)
+	df.log_beta = log.(df.beta)
 	println("Study in $DIR: $(nrow(df)) runs, $(length(unique(df.setting))) settings")
 	if nrow(df) < 3 * length(DESIGN_PARAMS)
 		@warn "only $(nrow(df)) runs for $(length(DESIGN_PARAMS)) parameters: estimates are very rough"

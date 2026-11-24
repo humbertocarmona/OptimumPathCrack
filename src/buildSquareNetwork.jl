@@ -224,7 +224,6 @@ function buildSquareNetwork(
 	nvertices = nx * ny
 	nnodes = nvertices + 2 * od
 	g = SimpleDiGraph(nnodes)
-	weightmx = spzeros(nnodes, nnodes)
 
 	center = [-3.7327, -38.5270]  # Base coordinate
 	dx = 9.043317e-4  # X-axis spacing
@@ -273,23 +272,26 @@ function buildSquareNetwork(
 		end
 		all(>(0), weights) || throw(ArgumentError("quantiles of $dist gave non-positive weights"))
 	end
-	for (k, (s, d, _, _, _)) in enumerate(lattice_edges)
+	# weight matrix built in one call (inserting entries one by one is quadratic in E)
+	Is = [e[1] for e in lattice_edges]
+	Js = [e[2] for e in lattice_edges]
+	for (s, d) in zip(Is, Js)
 		add_edge!(g, s, d)
-		weightmx[s, d] = weights[k]
 	end
 
 	if od
-		w_od = 1e-6 * minimum(nonzeros(weightmx))
+		w_od = 1e-6 * minimum(weights)
 		org, dst = nvertices + 1, nvertices + 2
 		for j in 1:ny
 			add_edge!(g, org, ij2n(1, j, nx))
-			weightmx[org, ij2n(1, j, nx)] = w_od
+			push!(Is, org); push!(Js, ij2n(1, j, nx)); push!(weights, w_od)
 			add_edge!(g, ij2n(nx, j, nx), dst)
-			weightmx[ij2n(nx, j, nx), dst] = w_od
+			push!(Is, ij2n(nx, j, nx)); push!(Js, dst); push!(weights, w_od)
 		end
 		push!(coords, Tuple(center + [0.5 * (nx - 1.0) * dx, -1.0 * dy]))
 		push!(coords, Tuple(center + [0.5 * (nx - 1.0) * dx, (ny + 1.0) * dy]))
 	end
+	weightmx = sparse(Is, Js, weights, nnodes, nnodes)
 
 	return g, coords, weightmx, 0
 end

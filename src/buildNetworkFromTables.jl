@@ -77,9 +77,9 @@ function buildNetworkFromTables(edges_df::DataFrame, nodes_df::DataFrame)
 	n_edges = size(edges_df, 1)  # Number of edges
 	n_nodes = size(nodes_df, 1)  # Number of nodes
 
-	# Initialize sparse matrices for distance and weight storage
-	distance_matrix = spzeros(n_nodes, n_nodes)
-	weight_matrix = spzeros(n_nodes, n_nodes)
+	# Entries of the distance and weight matrices, built in one call at the end
+	# (inserting into a sparse matrix one entry at a time is quadratic in the edges)
+	Is, Js, Ls, Ws = Int[], Int[], Float64[], Float64[]
 
 	# Determine if weights are based on travel time
 	weighted = ("travelTime" in names(edges_df))
@@ -102,12 +102,13 @@ function buildNetworkFromTables(edges_df::DataFrame, nodes_df::DataFrame)
 
 		# Attempt to add the edge; if successful, update matrices
 		if add_edge!(g, s, d)
-			distance_matrix[s, d] = l
-			weight_matrix[s, d] = w
+			push!(Is, s); push!(Js, d); push!(Ls, l); push!(Ws, w)
 		else
 			println("Problem with edge ($s, $d)")
 		end
 	end
+	distance_matrix = sparse(Is, Js, Ls, n_nodes, n_nodes)
+	weight_matrix = sparse(Is, Js, Ws, n_nodes, n_nodes)
 
 	# Create a mapping from original edge indices to graph edges
 	edges_index_dict = Dict()

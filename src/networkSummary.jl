@@ -10,7 +10,8 @@ with real cities and for use as variables in a parameter study:
 - `dead_end_fraction`: nodes with a single street neighbour;
 - `scc_fraction`: fraction of nodes in the largest strongly connected component;
 - `imbalance`: mean |in-degree − out-degree|;
-- `weight_mean`, `weight_cv` (if `weight_matrix` is given).
+- `weight_mean`, `weight_cv`, and `equivalent_beta = √12 · std(log w)`, the `β` of a
+  `DisorderDist` with the same spread of `log w` (if `weight_matrix` is given).
 """
 function networkSummary(g::SimpleDiGraph, weight_matrix = nothing)
 	N = nv(g)
@@ -29,17 +30,19 @@ function networkSummary(g::SimpleDiGraph, weight_matrix = nothing)
 	scc = maximum(length, strongly_connected_components(g))
 	imbalance = sum(abs(indegree(g, u) - outdegree(g, u)) for u in 1:N) / N
 
-	w_mean, w_cv = NaN, NaN
+	w_mean, w_cv, β_eq = NaN, NaN, NaN
 	if weight_matrix !== nothing
 		w = [weight_matrix[src(e), dst(e)] for e in edges(g)]
 		w_mean = sum(w) / length(w)
 		w_cv = sqrt(sum(abs2, w .- w_mean) / length(w)) / w_mean
+		lw = log.(w)
+		β_eq = sqrt(12 * sum(abs2, lw .- sum(lw) / length(lw)) / length(lw))
 	end
 
 	return (n_nodes = N, n_edges = ne(g), mean_degree = sum(und) / N,
 		mean_out_degree = ne(g) / N, oneway_fraction = n_oneway / n_segments,
 		dead_end_fraction = count(==(1), und) / N, scc_fraction = scc / N,
-		imbalance = imbalance, weight_mean = w_mean, weight_cv = w_cv)
+		imbalance = imbalance, weight_mean = w_mean, weight_cv = w_cv, equivalent_beta = β_eq)
 end
 
 """

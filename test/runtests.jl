@@ -425,6 +425,39 @@ function test_buildCityLattice()
 	end
 	@test_throws ArgumentError buildCityLattice(nx, ny; mean_degree = 4.5)
 
+	# beta: with no road variation and no arterials, weights = weight_mean × factor, and the
+	# factors are exactly the normalized DisorderDist quantiles, for any hurst
+	nb = 40
+	gb, _, _, _, _ = buildCityLattice(nb, nb; arterial_fraction = 0.0, road_cv = 0.0, seed = 4)
+	for (β, H) in ((3.0, -1.0), (3.0, 0.7), (10.0, 0.3))
+		g4, _, _, W4, _ = buildCityLattice(nb, nb; arterial_fraction = 0.0, road_cv = 0.0,
+			weight_mean = 2.0, beta = β, hurst = H, seed = 4)
+		@test g4 == gb                                   # weights never change the layout
+		w = sort([W4[src(e), dst(e)] for e in edges(g4)])
+		E = length(w)
+		d = DisorderDist(β)
+		@test w ≈ [2.0 * quantile(d, (k - 0.5) / E) / mean(d) for k in 1:E]
+		@test isapprox(networkSummary(g4, W4).equivalent_beta, β; rtol = 0.01)
+	end
+	nodeb(i, j) = i + nb * (j - 1)
+	# hurst: neighbouring parallel blocks (same direction) more correlated for larger H
+	function next_corr(H)
+		g5, _, _, W5, _ = buildCityLattice(nb, nb; oneway_fraction = 0.0, arterial_fraction = 0.0,
+			road_cv = 0.0, beta = 5.0, hurst = H, seed = 6)
+		a = [log(W5[nodeb(i, j), nodeb(i + 1, j)]) for j in 1:(nb-1), i in 1:(nb-1)]
+		b = [log(W5[nodeb(i, j + 1), nodeb(i + 1, j + 1)]) for j in 1:(nb-1), i in 1:(nb-1)]
+		a, b = vec(a) .- sum(a) / length(a), vec(b) .- sum(b) / length(b)
+		return sum(a .* b) / sqrt(sum(abs2, a) * sum(abs2, b))
+	end
+	c = next_corr.((-1.0, 0.0, 0.7))
+	@test abs(c[1]) < 0.1 && c[1] < c[2] < c[3] && c[3] > 0.8
+	# arterials stay smooth whatever beta is
+	g6, _, _, W6, roads6 = buildCityLattice(nb, nb; arterial_fraction = 0.2, beta = 20.0, seed = 2)
+	for r in eachrow(filter(r -> r.arterial && r.orientation == :row, roads6))
+		w = [W6[nodeb(i, r.index), nodeb(mod1(i + 1, nb), r.index)] for i in 1:nb]
+		@test maximum(w) / minimum(w) < 1.3
+	end
+
 	# same seed -> same network; it plugs into crackStatistics
 	@test buildCityLattice(nx, ny; seed = 9)[4] == buildCityLattice(nx, ny; seed = 9)[4]
 	_, od = crackStatistics(g, coords, dm, wm, [300.0, 600.0]; n_od_pairs = 10)
