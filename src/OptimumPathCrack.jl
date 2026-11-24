@@ -50,7 +50,7 @@ swap(t::Tuple) = (t[2], t[1])
 include("getGoogleDirection.jl")
 include("getTravelTimes.jl")
 include("getMapOSM.jl")
-include("buildCityNetwork.jl")
+include("buildNetworkFromTables.jl")
 include("buildSquareNetwork.jl")
 include("cellList.jl")
 include("create_ODs.jl")
@@ -59,7 +59,7 @@ include("writeGPKGFile.jl")
 include("writeGML.jl")
 include("DisorderDist.jl")
 
-export DisorderDist, rand, buildCityNetwork, buildSquareNetwork,
+export DisorderDist, rand, buildNetworkFromTables, buildSquareNetwork,
 	cellList_lat_lon, cellList_euclidean, crackOptimalPaths, getGoogleDirection, getMapOSM,
 	getTravelTimes,
 	create_ODs, writeGML, writeGPKGFile

@@ -15,22 +15,22 @@
 
 	# Notes
 	- The function reads CSV files using `CSV.read` and converts them into DataFrames.
-	- It internally calls `buildCityNetwork(edges_df::DataFrame, nodes_df::DataFrame)` to process the data.
+	- It internally calls `buildNetworkFromTables(edges_df::DataFrame, nodes_df::DataFrame)` to process the data.
 """
-function buildCityNetwork(edges_file::String, nodes_file::String)
+function buildNetworkFromTables(edges_file::String, nodes_file::String)
 	# Read CSV files into DataFrames
 	edges_df = CSV.read(edges_file, DataFrame)
 	nodes_df = CSV.read(nodes_file, DataFrame)
 
 	# Construct the city network using the DataFrame version of the function
 	g, coords, distance_matrix, weight_matrix, edges_index_dict =
-		buildCityNetwork(edges_df, nodes_df)
+		buildNetworkFromTables(edges_df, nodes_df)
 
 	return g, coords, distance_matrix, weight_matrix, edges_index_dict
 end
 
 """
-	buildCityNetwork(edges_df::DataFrame, nodes_df::DataFrame)
+	buildNetworkFromTables(edges_df::DataFrame, nodes_df::DataFrame)
 
 	Constructs a directed city network graph from given edge and node data.
 
@@ -59,7 +59,7 @@ end
 	- If an edge addition fails, a warning is printed.
 
 """
-function buildCityNetwork(edges_df::DataFrame, nodes_df::DataFrame)
+function buildNetworkFromTables(edges_df::DataFrame, nodes_df::DataFrame)
 
 	# Ensure required columns are present in edges_df
 	@assert "src" in names(edges_df) "edges need 'src' column"

@@ -3,14 +3,14 @@ using Test
 using Test, CSV, DataFrames, Graphs, SparseArrays
 using Random, Distributions
 
-function test_buildCityNetwork()
+function test_buildNetworkFromTables()
 	# Create temporary CSV files for testing
 	edges_file = "data/edges.csv"
 	nodes_file = "data/nodes.csv"
 
 	# Run the function with test data
 	g, coords, distance_matrix, weight_matrix, edges_index_dict =
-		buildCityNetwork(edges_file, nodes_file)
+		buildNetworkFromTables(edges_file, nodes_file)
 	display(weight_matrix)
 
 	# Perform assertions
@@ -84,7 +84,7 @@ function test_OD_matrix()
 	edges_file = "data/boston-edges-4h.csv"
 	nodes_file = "data/boston-nodes.csv"
 	g, coords, distance_matrix, weight_matrix, edges_index_dict =
-		buildCityNetwork(edges_file, nodes_file)
+		buildNetworkFromTables(edges_file, nodes_file)
 	cell_list = cellList_lat_lon(coords; cellWidth = 100.0)
 	println(typeof(cell_list))
 	n_od_pairs = 1000
@@ -97,7 +97,7 @@ function test_crackOptimalPaths()
 	edges_file = "data/boston-edges-4h.csv"
 	nodes_file = "data/boston-nodes.csv"
 	g, coords, distance_matrix, weight_matrix, edges_index_dict =
-		buildCityNetwork(edges_file, nodes_file)
+		buildNetworkFromTables(edges_file, nodes_file)
 	cell_list = cellList_lat_lon(coords; cellWidth = 100.0)
 	n_od_pairs = 10
 	ℓ = 5000.0
@@ -128,6 +128,6 @@ end
 #     test_buildSquareNetwork()
 # end
 
-# @testset "buildCityNetwork Tests" begin
-#     test_buildCityNetwork()
+# @testset "buildNetworkFromTables Tests" begin
+#     test_buildNetworkFromTables()
 # end
