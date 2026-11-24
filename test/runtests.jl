@@ -41,7 +41,52 @@ function test_buildSquareNetwork()
 	@test size(weightmx) == (nv(g), nv(g))  # Check weight matrix size
 	@test placeholder == 0  # Ensure placeholder return value is correct
 
+	# All weights strictly positive, also for a distribution that can go negative
+	# (Normal(0.5, 0.3) is negative ~5% of the time) and for the OD links
+	g, _, W, _ = buildSquareNetwork(20, 20; dist = Normal(0.5, 0.3), seed = 1)
+	w = [W[src(e), dst(e)] for e in edges(g)]
+	@test all(>(0), w)
+	org, dst_node = 20 * 20 + 1, 20 * 20 + 2
+	w_od = W[org, 1]
+	@test w_od > 0 && w_od < minimum(W[src(e), dst(e)] for e in edges(g) if src(e) <= 400 && dst(e) <= 400)
+	# reproducible, and crackable from the origin to the destination super-node
+	@test buildSquareNetwork(20, 20; dist = 5.0, seed = 7)[3] ==
+		  buildSquareNetwork(20, 20; dist = 5.0, seed = 7)[3]
+	g, _, W, _ = buildSquareNetwork(20, 20; dist = 5.0, seed = 7)
+	_, rem, _, res = crackOptimalPaths(g, org, dst_node, W)
+	@test res.stop_reason == :disconnected
+	@test all(k -> rem[org, k] == 0 && rem[k, dst_node] == 0, 1:nv(g))  # OD links never cracked
+
+	# A clear error for non-positive weights
+	W0 = copy(W); W0[org, 1] = 0.0
+	@test_throws ArgumentError crackOptimalPaths(g, org, dst_node, W0)
+
 	println("All tests passed for buildSquareNetwork!")
+end
+
+function test_DisorderDist()
+	β = 5.0
+	d = DisorderDist(β)
+	@test rand(Xoshiro(3), d) == rand(Xoshiro(3), d)
+	x = rand(Xoshiro(1), d, 200_000)
+	@test all(w -> exp(-β) <= w <= 1, x)
+	@test isapprox(sum(x) / length(x), mean(d); rtol = 0.01)
+	@test isapprox(sum(abs2, x .- mean(d)) / length(x), var(d); rtol = 0.03)
+	@test isapprox(sum(log, x) / length(x), -β / 2; atol = 0.02)  # log w uniform on [-β, 0]
+	@test minimum(d) == exp(-β) && maximum(d) == 1.0
+	@test quantile(d, cdf(d, 0.1)) ≈ 0.1
+	@test pdf(d, 0.1) ≈ 1 / (β * 0.1) && pdf(d, 1e-5) == 0
+	@test length(rand(d, 3)) == 3                      # global-RNG forms still work
+	@test rand(Xoshiro(1), DisorderDist(700.0)) > 0    # strongest allowed disorder
+	@test_throws ArgumentError DisorderDist(0.0)
+	@test_throws ArgumentError DisorderDist(800.0)
+	# lattice built from a number β uses DisorderDist(β)
+	g, _, W, _ = buildSquareNetwork(10, 10; dist = 3.0, od = false)
+	@test all(e -> exp(-3.0) <= W[src(e), dst(e)] <= 1, edges(g))
+end
+
+@testset "DisorderDist" begin
+	test_DisorderDist()
 end
 
 function test_cellList()

@@ -9,7 +9,6 @@ using Graphs
 using Random
 using SparseArrays
 using TOML
-import Random: rand
 
 swap(t::Tuple) = (t[2], t[1])
 
@@ -66,7 +65,7 @@ include("crackStatistics.jl")
 include("writeGML.jl")
 include("DisorderDist.jl")
 
-export DisorderDist, rand, buildNetworkFromTables, buildSquareNetwork, buildCityLattice,
+export DisorderDist, buildNetworkFromTables, buildSquareNetwork, buildCityLattice,
 	networkSummary, integratedRemovals,
 	cellList_lat_lon, cellList_euclidean, crackOptimalPaths, crackStatistics,
 	writeCrackStatistics, readCrackStatistics, getGoogleDirection, getMapOSM,

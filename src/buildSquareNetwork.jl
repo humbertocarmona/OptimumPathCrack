@@ -167,23 +167,29 @@ function buildSquareNetwork_velho(nx::Int, ny::Int; p::Float64 = 0.5,
 end
 
 """
-	Constructs a square grid network with optional bidirectional edges and periodic boundary conditions.
+	buildSquareNetwork(nx, ny; p = 0.5, dist, seed = 123, od = true, pbc = false)
+		-> (g, coords, weightmx, 0)
 
-	# Arguments
-	- `nx::Int`: Number of columns in the square grid.
-	- `ny::Int`: Number of rows in the square grid.
-	- `p::Float64=0.5`: Probability of creating unidirectional edges instead of bidirectional ones.
-	- `dist`: Probability distribution used to generate edge weights.
-	- `seed::Int64=123`: Random seed for reproducibility.
-	- `od::Bool=true`: Whether to add origin and destination nodes.
-	- `pbc::Bool=false`: Whether to apply periodic boundary conditions.
+Square grid of `nx × ny` nodes with random edge directions and weights.
 
-	# Returns
-	A tuple `(g, coords, weightmx, 0)` where:
-	- `g`: A directed graph representing the network.
-	- `coords`: A list of tuples representing the coordinates of each node.
-	- `weightmx`: A sparse matrix storing the weights of the edges.
-	- `0`: A placeholder value.
+# Arguments
+- `nx::Int`, `ny::Int`: Number of columns and rows.
+- `p::Float64 = 0.5`: Probability that a link is one-way (random direction); otherwise
+  it is two-way, with an independent weight per direction.
+- `dist`: Weight distribution: any univariate distribution, or a number `β` for
+  `DisorderDist(β)`. Weights are drawn conditioned on being strictly positive (values
+  ≤ 0 are redrawn), so e.g. `Normal(0.5, 0.3)` gives a normal truncated at 0.
+- `seed::Int64 = 123`: Seed for a local random generator (the global one is not touched).
+- `od::Bool = true`: Adds an origin node (index `nx*ny + 1`) linked to every node of
+  the first column and a destination node (`nx*ny + 2`) linked from every node of the
+  last column. These links get a weight of `1e-6 ×` the smallest lattice weight: they
+  are positive, as cracking requires, but never the heaviest edge of a path and they do
+  not change which path is shortest.
+- `pbc::Bool = false`: Periodic boundary in the horizontal direction.
+
+# Returns
+`(g, coords, weightmx, 0)`: directed graph, (lat, lon) coordinates, weight matrix, and
+a placeholder. Node `(i, j)` has index `i + nx*(j-1)`.
 """
 function buildSquareNetwork(
 	nx::Int,
@@ -194,92 +200,49 @@ function buildSquareNetwork(
 	od::Bool = true,
 	pbc::Bool = false,
 )
+	dist isa Real && (dist = DisorderDist(dist))
+	rng = Random.Xoshiro(seed)
 
-	# Convert numerical `dist` to a distribution object if necessary
-	if isa(dist, Float64)
-		dist = DisorderDist(dist)
-	end
-
-	# Set random seed for reproducibility
-	Random.seed!(seed)
-
-	# Initialize graph and weight matrix
 	nvertices = nx * ny
-	nnodes = nvertices + 2 * od  # Add extra nodes if `od` is true
+	nnodes = nvertices + 2 * od
 	g = SimpleDiGraph(nnodes)
 	weightmx = spzeros(nnodes, nnodes)
 
-	en = 0  # Edge counter
 	center = [-3.7327, -38.5270]  # Base coordinate
 	dx = 9.043317e-4  # X-axis spacing
 	dy = 9.002123e-4  # Y-axis spacing
 	coords = Tuple{Float64, Float64}[]
 
-	# Iterate over grid points to generate nodes
-	for i in 1:nx
-		for j in 1:ny
-			pos = center + [(i - 1) * dx, (j - 1) * dy]
-			push!(coords, Tuple(pos))
-			s = ij2n(i, j, nx)  # Compute node index
-
-			# Add horizontal edges
-			if i < nx || pbc
-				d = ij2n(mod1(i + 1, nx), j, nx)
-				unidirected = p > rand()
-				if unidirected
-					if rand() > 0.5
-						ϵ = rand(dist)
-						add_edge!(g, s, d)
-						weightmx[s, d] = ϵ
-					else
-						ϵ = rand(dist)
-						add_edge!(g, d, s)
-						weightmx[d, s] = ϵ
-					end
-				else
-					ϵ = rand(dist)
-					add_edge!(g, s, d)
-					weightmx[s, d] = ϵ
-					ϵ = rand(dist)
-					add_edge!(g, d, s)
-					weightmx[d, s] = ϵ
-				end
-			end
-
-			# Add vertical edges
-			if j < ny
-				d = ij2n(i, j + 1, nx)
-				unidirected = p > rand()
-				if unidirected
-					if rand() > 0.5
-						ϵ = rand(dist)
-						add_edge!(g, s, d)
-						weightmx[s, d] = ϵ
-					else
-						ϵ = rand(dist)
-						add_edge!(g, d, s)
-						weightmx[d, s] = ϵ
-					end
-				else
-					ϵ = rand(dist)
-					add_edge!(g, s, d)
-					weightmx[s, d] = ϵ
-					ϵ = rand(dist)
-					add_edge!(g, d, s)
-					weightmx[d, s] = ϵ
-				end
-			end
+	function add_link!(s, d)
+		if p > rand(rng)            # one-way, random direction
+			rand(rng) > 0.5 && ((s, d) = (d, s))
+			add_edge!(g, s, d)
+			weightmx[s, d] = _positive_rand(rng, dist)
+		else                        # two-way, independent weights
+			add_edge!(g, s, d)
+			weightmx[s, d] = _positive_rand(rng, dist)
+			add_edge!(g, d, s)
+			weightmx[d, s] = _positive_rand(rng, dist)
 		end
 	end
 
-	# Add origin-destination nodes if `od` is enabled
+	for i in 1:nx
+		for j in 1:ny
+			push!(coords, Tuple(center + [(i - 1) * dx, (j - 1) * dy]))
+			s = ij2n(i, j, nx)
+			(i < nx || pbc) && add_link!(s, ij2n(mod1(i + 1, nx), j, nx))  # horizontal
+			j < ny && add_link!(s, ij2n(i, j + 1, nx))                    # vertical
+		end
+	end
+
 	if od
+		w_od = 1e-6 * minimum(nonzeros(weightmx))
 		org, dst = nvertices + 1, nvertices + 2
 		for j in 1:ny
 			add_edge!(g, org, ij2n(1, j, nx))
-			weightmx[org, ij2n(1, j, nx)] = 0.0
+			weightmx[org, ij2n(1, j, nx)] = w_od
 			add_edge!(g, ij2n(nx, j, nx), dst)
-			weightmx[ij2n(nx, j, nx), dst] = 0.0
+			weightmx[ij2n(nx, j, nx), dst] = w_od
 		end
 		push!(coords, Tuple(center + [0.5 * (nx - 1.0) * dx, -1.0 * dy]))
 		push!(coords, Tuple(center + [0.5 * (nx - 1.0) * dx, (ny + 1.0) * dy]))

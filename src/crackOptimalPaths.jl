@@ -50,7 +50,12 @@ function CrackNetwork(g::SimpleDiGraph, weight_matrix::SparseMatrixCSC{Float64, 
 		end
 	end
 	offsets[N+1] = e
-	any(w -> !(w > 0), weights) && throw(ArgumentError("edge weights must be positive"))
+	bad = findall(w -> !(w > 0), weights)
+	if !isempty(bad)
+		e = bad[1]
+		throw(ArgumentError("edge weights must be positive: $(length(bad)) edge(s) are not, " *
+							"e.g. ($(srcs[e]), $(targets[e])) has weight $(weights[e])"))
+	end
 
 	# in-edges, grouped by target
 	in_offsets = zeros(Int, N + 1)
