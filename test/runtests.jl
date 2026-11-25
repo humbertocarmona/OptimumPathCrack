@@ -519,6 +519,23 @@ end
     test_buildSquareNetwork()
 end
 
+@testset "square torus" begin
+	# p = 0: every link two-way, so a torus has exactly 4 out-edges per node
+	g, _, W, _ = buildSquareNetwork(6, 5; p = 0.0, dist = 2.0, seed = 3, od = false,
+		pbc = true, pbc_y = true)
+	@test nv(g) == 30 && ne(g) == 4 * 30
+	@test all(outdegree(g, v) == 4 for v in 1:30)
+	@test has_edge(g, 1 + 6 * 4, 1) && has_edge(g, 1, 1 + 6 * 4)   # (1,5) <-> (1,1)
+	@test is_strongly_connected(g)
+	# defaults unchanged: open in y
+	g2, _, _, _ = buildSquareNetwork(6, 5; p = 0.0, dist = 2.0, seed = 3, od = false, pbc = true)
+	@test ne(g2) == 2 * (6 * 5 + 6 * 4)
+	# correlated weights on the torus
+	g3, _, W3, _ = buildSquareNetwork(8, 8; p = 0.3, dist = 5.0, seed = 3, od = false,
+		pbc = true, pbc_y = true, hurst = 0.5)
+	@test all(W3[src(e), dst(e)] > 0 for e in edges(g3))
+end
+
 @testset "buildNetworkFromTables Tests" begin
     test_buildNetworkFromTables()
 end

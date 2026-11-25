@@ -168,7 +168,7 @@ end
 
 """
 	buildSquareNetwork(nx, ny; p = 0.5, dist, seed = 123, od = true, pbc = false,
-					   hurst = nothing, direction_rho = 0.0)
+					   pbc_y = false, hurst = nothing, direction_rho = 0.0)
 		-> (g, coords, weightmx, 0)
 
 Square grid of `nx × ny` nodes with random edge directions and weights.
@@ -187,6 +187,8 @@ Square grid of `nx × ny` nodes with random edge directions and weights.
   are positive, as cracking requires, but never the heaviest edge of a path and they do
   not change which path is shortest.
 - `pbc::Bool = false`: Periodic boundary in the horizontal direction.
+- `pbc_y::Bool = false`: Periodic boundary in the vertical direction. With both `pbc`
+  and `pbc_y` (and `od = false`) the lattice is a torus, for point-to-point cracking.
 - `hurst = nothing`: If a number `H ≥ -1`, weights are spatially correlated. A surface
   from `fbmSurface` with Hurst exponent `H` is sampled at each link's midpoint (on a grid
   twice as fine as the lattice), and the values are mapped to weights by rank:
@@ -213,6 +215,7 @@ function buildSquareNetwork(
 	seed::Int64 = 123,
 	od::Bool = true,
 	pbc::Bool = false,
+	pbc_y::Bool = false,
 	hurst::Union{Nothing, Real} = nothing,
 	direction_rho::Real = 0.0,
 )
@@ -252,7 +255,7 @@ function buildSquareNetwork(
 			push!(coords, Tuple(center + [(i - 1) * dx, (j - 1) * dy]))
 			s = ij2n(i, j, nx)
 			(i < nx || pbc) && add_link!(s, ij2n(mod1(i + 1, nx), j, nx), 2i, 2j - 1)
-			j < ny && add_link!(s, ij2n(i, j + 1, nx), 2i - 1, 2j)
+			(j < ny || pbc_y) && add_link!(s, ij2n(i, mod1(j + 1, ny), nx), 2i - 1, 2j)
 		end
 	end
 
