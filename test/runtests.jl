@@ -451,6 +451,37 @@ function test_buildCityLattice()
 	end
 	c = next_corr.((-1.0, 0.0, 0.7))
 	@test abs(c[1]) < 0.1 && c[1] < c[2] < c[3] && c[3] > 0.8
+	# coarse-grid layout: tree (q = 0), nested loops, full grid (q = 1)
+	function fast_graph(q; pbc = true, n1 = 24, n2 = 16, s = 4, k = 4.0)
+		g7, _, _, W7, r7 = buildCityLattice(n1, n2; arterial_spacing = s, loop_fraction = q,
+			oneway_fraction = 0.5, arterial_speedup = 4.0, road_cv = 0.0,
+			arterial_segment_cv = 0.0, pbc = pbc, mean_degree = k, seed = 5)
+		fe = Set(minmax(src(e), dst(e)) for e in edges(g7) if W7[src(e), dst(e)] == 0.25)
+		return g7, r7, fe
+	end
+	g7, r7, f0 = fast_graph(0.0)
+	cx, cy = 24 ÷ 4, 16 ÷ 4
+	@test length(f0) == (cx * cy - 1) * 4                  # spanning tree of s-block links
+	ft = SimpleGraph(nv(g7))
+	foreach(e -> add_edge!(ft, e...), f0)
+	coarse = [i + 24 * (j - 1) for i in 1:4:24 for j in 1:4:16]
+	@test all(c -> has_path(ft, coarse[1], c), coarse)     # connects every coarse node
+	@test ne(ft) == count(>(0), degree(ft)) - 1            # and has no loop
+	@test sort(metadata(r7, "arterial_nodes")) == findall(>(0), degree(ft))
+	_, _, fh = fast_graph(0.5)
+	_, r1, f1 = fast_graph(1.0)
+	@test f0 ⊆ fh ⊆ f1 && length(f1) == 2 * cx * cy * 4    # nested; q = 1 is the full grid
+	@test metadata(r1, "arterial_block_share") ≈ length(f1) / (2 * 24 * 16)
+	@test all(.!r1.oneway[r1.arterial]) && count(r1.arterial) == cx + cy
+	# local blocks of a coarse line are not fast; open lattice: links of s blocks only
+	_, _, fo = fast_graph(1.0; pbc = false, n1 = 23, n2 = 13, k = 3.3)
+	@test length(fo) == (((23 - 1) ÷ 4) * 4 * 4 + ((13 - 1) ÷ 4) * 6 * 4)
+	@test_throws ArgumentError buildCityLattice(20, 16; arterial_spacing = 3)
+	@test_throws ArgumentError buildCityLattice(24, 16; arterial_spacing = 4, loop_fraction = 1.5)
+	# default layout unchanged by the new keywords
+	@test buildCityLattice(nx, ny; seed = 3)[1] == buildCityLattice(nx, ny; seed = 3,
+		loop_fraction = 0.2)[1]
+
 	# arterials stay smooth whatever beta is
 	g6, _, _, W6, roads6 = buildCityLattice(nb, nb; arterial_fraction = 0.2, beta = 20.0, seed = 2)
 	for r in eachrow(filter(r -> r.arterial && r.orientation == :row, roads6))
