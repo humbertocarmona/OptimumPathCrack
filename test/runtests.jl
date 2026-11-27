@@ -630,3 +630,24 @@ end
     g1, _, _, w1, _ = buildCityLattice(nx, nx; seed = 3, attractor_rings = Int[])
     @test g0 == g1 && w0 == w1
 end
+
+@testset "separate removal weights" begin
+    # O=1, D=4. Route A 1-2-4: two segments, long and fast (time 1 + 1 = 2, pace 0.1).
+    # Route B 1-3-4: two short, slow segments (time 0.5 + 0.5 = 1, pace 1 and 0.5).
+    g = SimpleDiGraph(4)
+    for (a, b) in ((1, 2), (2, 4), (1, 3), (3, 4))
+        add_edge!(g, a, b)
+    end
+    T = sparse([1, 2, 1, 3], [2, 4, 3, 4], [1.0, 1.0, 0.5, 0.5], 4, 4)   # travel time
+    P = sparse([1, 2, 1, 3], [2, 4, 3, 4], [0.1, 0.1, 1.0, 0.5], 4, 4)   # pace 1/v
+    # routing by time takes B first; removing by pace cuts its slowest edge 1->3
+    _, rem, _, info = crackOptimalPaths(g, 1, 4, T; removal_matrix = P)
+    @test rem[1, 3] == 1 && info.path_costs[1] ≈ 1.0 && info.path_costs[2] ≈ 2.0
+    # removing by time (default) cuts either of B's equal-time edges first
+    _, rem0, _, _ = crackOptimalPaths(g, 1, 4, T)
+    @test rem0[1, 3] == 1 || rem0[3, 4] == 1
+    # then route A: by pace its edges tie, so one of them goes second; disconnected after 2
+    @test nnz(rem) == 2 && info.stop_reason == :disconnected
+    net = CrackNetwork(g, T)
+    @test_throws ArgumentError OptimumPathCrack._crack(net, 1, 4; removal_weights = [1.0])
+end

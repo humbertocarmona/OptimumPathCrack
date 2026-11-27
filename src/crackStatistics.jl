@@ -1,12 +1,15 @@
 """
 	crackStatistics(g, coords, distance_matrix, weight_matrix, ℓ;
 					n_od_pairs = 100, seed = 1, δ = 0.01, cellWidth = 100.0,
-					maxCostRatio = Inf, nMaxRem = 0, cell_list = nothing)
+					maxCostRatio = Inf, nMaxRem = 0, cell_list = nothing,
+					removal_matrix = nothing)
 
 Runs the optimum-path-crack experiment for OD distance `ℓ` (meters), or for each
 distance in a vector `ℓ`. For each OD pair from `create_ODs`, the network is cracked
 with `crackOptimalPaths`, starting each time from an untouched `g`. Only pairs in the
 same strongly connected component are used, so every pair starts with a path.
+`removal_matrix`, if given, chooses the edge removed from each path (largest value)
+while the paths stay optimal for `weight_matrix`; see `crackOptimalPaths`.
 
 OD pairs are cracked in parallel on `Threads.nthreads()` threads (start Julia with
 `-t auto` or `JULIA_NUM_THREADS`). Results do not depend on the number of threads.
@@ -42,7 +45,8 @@ function crackStatistics(g::SimpleDiGraph,
 	cellWidth::Float64 = 100.0,
 	maxCostRatio::Float64 = Inf,
 	nMaxRem::Int64 = 0,
-	cell_list::Union{Nothing, AbstractDict} = nothing)
+	cell_list::Union{Nothing, AbstractDict} = nothing,
+	removal_matrix::Union{Nothing, SparseMatrixCSC{Float64, Int64}} = nothing)
 
 	if cell_list === nothing
 		cell_list = cellList_lat_lon(coords; cellWidth = cellWidth)
@@ -61,12 +65,13 @@ function crackStatistics(g::SimpleDiGraph,
 	# Crack in parallel on one shared, read-only network; each task writes only its
 	# own slot.
 	net = CrackNetwork(g, weight_matrix)
+	rw = removal_matrix === nothing ? nothing : edgeValues(net, removal_matrix)
 	results = Vector{Any}(undef, length(tasks))
 	Threads.@threads :greedy for t in eachindex(tasks)
 		k, od_id, o, d = tasks[t]
 		rng = Random.Xoshiro(UInt64[seed % UInt64, k, od_id])
 		results[t] = _crack(net, o, d; nMaxRem = nMaxRem, maxCostRatio = maxCostRatio,
-			record_paths = false, rng = rng)
+			record_paths = false, rng = rng, removal_weights = rw)
 	end
 
 	# Assemble the tables serially, in task order (deterministic)
