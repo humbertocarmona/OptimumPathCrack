@@ -331,6 +331,28 @@ function _crack(net::CrackNetwork, org::Int, dst::Int;
 	end
 end
 
+# Network to route on and weights to remove by. `route_by = :weight` routes and removes
+# by `weight_matrix` (or removes by `removal_matrix`). `route_by = :time` reads
+# `weight_matrix` as the pace 1/speed (time per unit length): it routes by the travel
+# time length × pace and removes the edge of largest pace (the slowest).
+function _crack_setup(net::CrackNetwork, removal_matrix, route_by::Symbol, distance_matrix)
+	route_by in (:weight, :time) ||
+		throw(ArgumentError("route_by must be :weight or :time, got :$route_by"))
+	if route_by == :time
+		removal_matrix === nothing ||
+			throw(ArgumentError("route_by = :time removes the slowest edge; do not also " *
+								"give removal_matrix"))
+		distance_matrix === nothing &&
+			throw(ArgumentError("route_by = :time needs the distance matrix"))
+		len = edgeValues(net, distance_matrix)
+		all(>(0), len) || throw(ArgumentError("route_by = :time needs positive edge lengths"))
+		tnet = CrackNetwork(net.offsets, net.srcs, net.targets, len .* net.weights,
+			net.in_offsets, net.in_edges)
+		return tnet, net.weights
+	end
+	return net, removal_matrix === nothing ? nothing : edgeValues(net, removal_matrix)
+end
+
 """
 	crackOptimalPaths(g::SimpleDiGraph, org::Int64, dst::Int64,
 					  weight_matrix::SparseMatrixCSC{Float64, Int64};
@@ -349,11 +371,18 @@ highest-weight edge, on a copy of `g`.
 - `maxCostRatio::Float64` (optional): Stop when the cost of the current shortest
   path exceeds `maxCostRatio` times the cost of the first shortest path. The path
   that triggers the stop is not cracked. Defaults to `Inf` (no limit).
-- `removal_matrix` (optional): if given, the edge removed from each shortest path is the
-  one with the largest `removal_matrix[i, j]` instead of the largest weight. Paths stay
-  optimal for `weight_matrix`. For example, route by travel time (length / speed) and
-  remove the slowest edge (largest 1 / speed): neither step then depends on how roads
-  are cut into segments.
+- `route_by` (optional): `:weight` (default) finds the shortest path by `weight_matrix`
+  and removes its heaviest edge. `:time` reads `weight_matrix` as the pace, 1 / speed
+  (time per unit length), as in Sousa et al.: it finds the fastest path by travel time,
+  `distance_matrix[i, j] × weight_matrix[i, j]` = length / speed, and removes its
+  slowest edge (largest pace). Neither step then depends on how roads are cut into
+  segments (splitting a road keeps its travel time and its speed), whereas the sum of
+  1 / speed grows with the number of segments. Needs `distance_matrix`. Path costs are
+  then travel times.
+- `distance_matrix` (optional): edge lengths, needed for `route_by = :time`.
+- `removal_matrix` (optional): any other removal criterion: the edge removed from each
+  shortest path is the one with the largest `removal_matrix[i, j]`. Paths stay optimal
+  for `weight_matrix`.
 - `rng::AbstractRNG` (optional): Random generator for tie-breaking. When several
   shortest paths have the same cost, one is drawn uniformly among them; when several
   edges on the path share the largest weight, one is drawn uniformly. The default is
@@ -377,11 +406,13 @@ function crackOptimalPaths(g::SimpleDiGraph, org::Int64, dst::Int64,
 	weight_matrix::SparseMatrixCSC{Float64, Int64};
 	nMaxRem::Int64 = 0,
 	maxCostRatio::Float64 = Inf,
+	route_by::Symbol = :weight,
+	distance_matrix::Union{Nothing, SparseMatrixCSC{Float64, Int64}} = nothing,
 	removal_matrix::Union{Nothing, SparseMatrixCSC{Float64, Int64}} = nothing,
 	rng::AbstractRNG = Random.Xoshiro(1))
 
-	net = CrackNetwork(g, weight_matrix)
-	rw = removal_matrix === nothing ? nothing : edgeValues(net, removal_matrix)
+	net, rw = _crack_setup(CrackNetwork(g, weight_matrix), removal_matrix, route_by,
+		distance_matrix)
 	res = _crack(net, org, dst; nMaxRem = nMaxRem, maxCostRatio = maxCostRatio, rng = rng,
 		removal_weights = rw)
 

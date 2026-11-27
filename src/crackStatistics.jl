@@ -2,14 +2,16 @@
 	crackStatistics(g, coords, distance_matrix, weight_matrix, ℓ;
 					n_od_pairs = 100, seed = 1, δ = 0.01, cellWidth = 100.0,
 					maxCostRatio = Inf, nMaxRem = 0, cell_list = nothing,
-					removal_matrix = nothing)
+					route_by = :weight, removal_matrix = nothing)
 
 Runs the optimum-path-crack experiment for OD distance `ℓ` (meters), or for each
 distance in a vector `ℓ`. For each OD pair from `create_ODs`, the network is cracked
 with `crackOptimalPaths`, starting each time from an untouched `g`. Only pairs in the
 same strongly connected component are used, so every pair starts with a path.
-`removal_matrix`, if given, chooses the edge removed from each path (largest value)
-while the paths stay optimal for `weight_matrix`; see `crackOptimalPaths`.
+`route_by = :time` reads `weight_matrix` as the pace 1 / speed: it routes by travel
+time (`distance_matrix` × pace) and removes the slowest edge; path costs are then travel
+times, while the `weight` column of `edges_df` stays the pace. `removal_matrix` sets any
+other removal criterion. See `crackOptimalPaths`.
 
 OD pairs are cracked in parallel on `Threads.nthreads()` threads (start Julia with
 `-t auto` or `JULIA_NUM_THREADS`). Results do not depend on the number of threads.
@@ -46,6 +48,7 @@ function crackStatistics(g::SimpleDiGraph,
 	maxCostRatio::Float64 = Inf,
 	nMaxRem::Int64 = 0,
 	cell_list::Union{Nothing, AbstractDict} = nothing,
+	route_by::Symbol = :weight,
 	removal_matrix::Union{Nothing, SparseMatrixCSC{Float64, Int64}} = nothing)
 
 	if cell_list === nothing
@@ -64,8 +67,8 @@ function crackStatistics(g::SimpleDiGraph,
 
 	# Crack in parallel on one shared, read-only network; each task writes only its
 	# own slot.
-	net = CrackNetwork(g, weight_matrix)
-	rw = removal_matrix === nothing ? nothing : edgeValues(net, removal_matrix)
+	net, rw = _crack_setup(CrackNetwork(g, weight_matrix), removal_matrix, route_by,
+		distance_matrix)
 	results = Vector{Any}(undef, length(tasks))
 	Threads.@threads :greedy for t in eachindex(tasks)
 		k, od_id, o, d = tasks[t]
@@ -105,7 +108,7 @@ function crackStatistics(g::SimpleDiGraph,
 		"seed" => seed,
 		"delta" => δ,
 		"cellWidth" => Float64(get(cell_list, "cellWidth", cellWidth)),
-		"maxCostRatio" => maxCostRatio,
+		"maxCostRatio" => maxCostRatio, "route_by" => string(route_by),
 		"nMaxRem" => nMaxRem,
 		"tie_breaking" => "uniform random (equal-cost paths, then equal-weight edges)",
 		"n_nodes" => nv(g),

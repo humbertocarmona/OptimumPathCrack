@@ -650,4 +650,18 @@ end
     @test nnz(rem) == 2 && info.stop_reason == :disconnected
     net = CrackNetwork(g, T)
     @test_throws ArgumentError OptimumPathCrack._crack(net, 1, 4; removal_weights = [1.0])
+    # route_by = :time: weights are the pace P; route by D × P, remove the largest P
+    D = sparse([1, 2, 1, 3], [2, 4, 3, 4], [10.0, 10.0, 0.5, 1.0], 4, 4)   # lengths
+    # travel times D × P: route A 1 + 1 = 2, route B 0.5 + 0.5 = 1 → B first
+    _, remt, _, infot = crackOptimalPaths(g, 1, 4, P; route_by = :time, distance_matrix = D)
+    @test remt[1, 3] == 1 && infot.path_costs[1] ≈ 1.0 && infot.stop_reason == :disconnected
+    # by pace alone (the paper's rule) route A costs 0.2 < 1.5, so A goes first
+    _, remw, _, infow = crackOptimalPaths(g, 1, 4, P)
+    @test infow.path_costs[1] ≈ 0.2 && (remw[1, 2] == 1 || remw[2, 4] == 1)
+    # same crack as passing the travel time and the pace by hand
+    @test remt == crackOptimalPaths(g, 1, 4, D .* P; removal_matrix = P)[2]
+    @test_throws ArgumentError crackOptimalPaths(g, 1, 4, P; route_by = :time)
+    @test_throws ArgumentError crackOptimalPaths(g, 1, 4, P; route_by = :pace, distance_matrix = D)
+    @test_throws ArgumentError crackOptimalPaths(g, 1, 4, P; route_by = :time,
+        distance_matrix = D, removal_matrix = P)
 end
