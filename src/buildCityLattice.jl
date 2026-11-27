@@ -75,6 +75,13 @@ Road structure:
   spanning tree of the coarse grid plus this fraction of the other coarse links
   (`0` = tree, `1` = full grid). The fast length is then about `(1 + loop_fraction)/s`
   of all blocks.
+- `attractor_rings = Int[]`: mobility attractors as in the controlled lattice of
+  Cornacchia et al. (arXiv:2510.02582): for each `d`, the square of side `2d` blocks centred
+  on node `((nx+1)÷2, (ny+1)÷2)` becomes a two-way ring road whose blocks take
+  `weight_mean / attractor_speedup` (with `arterial_segment_cv` variation). Ring blocks are
+  never removed for `mean_degree` and override arterial or one-way status on their stretch.
+- `attractor_speedup = 2.0`: speed of the rings relative to a mean local block (the paper's
+  100 against 50 km/h).
 - `arterials_twoway = true`: arterials are always two-way. If `false`, they follow
   `oneway_fraction` like other roads.
 - `mean_degree = 4.0`: target mean number of street neighbours per intersection
@@ -117,7 +124,8 @@ Geometry:
   `0` two-way) and `mean_weight` (of the road's fast blocks for an arterial road; its
   local blocks take `mean_weight × arterial_speedup`). The generator parameters are
   attached as metadata, plus `"arterial_nodes"` (sorted nodes touching a fast block) and
-  `"arterial_block_share"` (fast share of the kept blocks).
+  `"arterial_block_share"` (fast share of the kept blocks), and `"attractor_nodes"`
+  (sorted nodes on a ring).
 Node `(i, j)` has index `i + nx*(j-1)`.
 """
 function buildCityLattice(nx::Int, ny::Int;
@@ -126,6 +134,8 @@ function buildCityLattice(nx::Int, ny::Int;
 	arterial_fraction::Float64 = 0.1,
 	arterial_spacing::Int = 0,
 	loop_fraction::Float64 = 1.0,
+	attractor_rings::Vector{Int} = Int[],
+	attractor_speedup::Float64 = 2.0,
 	arterials_twoway::Bool = true,
 	arterial_speedup::Float64 = 2.0,
 	weight_mean::Float64 = 1.0,
@@ -151,6 +161,12 @@ function buildCityLattice(nx::Int, ny::Int;
 			 (cld(nx, s_art) >= 2 && cld(ny, s_art) >= 2)
 		ok || throw(ArgumentError("arterial_spacing = $s_art does not fit a $nx × $ny " *
 								  "lattice (pbc: sides multiple of s, ≥ 3 coarse lines)"))
+	end
+	attractor_speedup > 0 || throw(ArgumentError("attractor_speedup must be > 0"))
+	ccx, ccy = (nx + 1) ÷ 2, (ny + 1) ÷ 2
+	for d in attractor_rings
+		(d >= 1 && ccx - d >= 1 && ccx + d <= nx && ccy - d >= 1 && ccy + d <= ny) ||
+			throw(ArgumentError("attractor ring d = $d does not fit a $nx × $ny lattice"))
 	end
 	disorder = DisorderDist(beta)            # validates 0 < beta ≤ 700
 	rng = Random.Xoshiro(UInt64[seed % UInt64, 1])    # structure
@@ -210,9 +226,21 @@ function buildCityLattice(nx::Int, ny::Int;
 			Random.Xoshiro(UInt64[seed % UInt64, 3]), segments)
 	end
 
+	# attractor rings: segment from node (i, j) along a row (or column) on the ring
+	attr = falses(length(segments))
+	for (k, (_, _, road, mx, my)) in enumerate(segments)
+		is_row = road <= ny
+		i, j = is_row ? (mx ÷ 2, road) : (road - ny, my ÷ 2)   # first node of the block
+		for d in attractor_rings
+			attr[k] |= is_row ? (abs(j - ccy) == d && ccx - d <= i < ccx + d) :
+					   (abs(i - ccx) == d && ccy - d <= j < ccy + d)
+		end
+	end
+	fast .&= .!attr
+
 	# Remove local blocks to reach the target mean degree (2 * segments / N)
 	n_keep = round(Int, mean_degree * N / 2)
-	local_segments = findall(!, fast)
+	local_segments = findall(.!fast .& .!attr)
 	n_remove = length(segments) - n_keep
 	if n_remove < 0
 		throw(ArgumentError("mean_degree = $mean_degree is above the lattice maximum " *
@@ -228,17 +256,20 @@ function buildCityLattice(nx::Int, ny::Int;
 	# (src, dst, road, midpoint x, midpoint y, forward?)
 	dedges = Tuple{Int, Int, Int, Int, Int, Bool}[]
 	edge_fast = Bool[]
+	edge_attr = Bool[]
 	for (k, (a, b, road, mx, my)) in enumerate(segments)
 		keep[k] || continue
-		dir = roads.direction[road]
+		dir = attr[k] ? 0 : roads.direction[road]
+		n0 = length(dedges)
 		dir >= 0 && (push!(dedges, (a, b, road, mx, my, true)); push!(edge_fast, fast[k]))
 		dir <= 0 && (push!(dedges, (b, a, road, mx, my, false)); push!(edge_fast, fast[k]))
+		append!(edge_attr, fill(attr[k], length(dedges) - n0))
 	end
 
 	# --- weights ---------------------------------------------------------------------
 	E = length(dedges)
 	factor = Vector{Float64}(undef, E)
-	is_local = .!edge_fast
+	is_local = .!edge_fast .& .!edge_attr
 	for k in findall(!, is_local)
 		factor[k] = _lognormal_factor(wrng, arterial_segment_cv)
 	end
@@ -265,7 +296,7 @@ function buildCityLattice(nx::Int, ny::Int;
 	end
 	distance_matrix = sparse(Is, Js, fill(block, E), N, N)
 	# an arterial road's mean_weight is that of its fast blocks; its local blocks are slower
-	block_mean(k) = (r = dedges[k][3];
+	block_mean(k) = edge_attr[k] ? weight_mean / attractor_speedup : (r = dedges[k][3];
 		roads.mean_weight[r] * (roads.arterial[r] && !edge_fast[k] ? arterial_speedup : 1.0))
 	weight_matrix = sparse(Is, Js, [block_mean(k) * factor[k] for k in 1:E], N, N)
 
@@ -278,6 +309,7 @@ function buildCityLattice(nx::Int, ny::Int;
 	params = Dict{String, Any}("nx" => nx, "ny" => ny, "oneway_fraction" => oneway_fraction,
 		"alternation" => alternation, "arterial_fraction" => arterial_fraction,
 		"arterial_spacing" => arterial_spacing, "loop_fraction" => loop_fraction,
+		"attractor_rings" => attractor_rings, "attractor_speedup" => attractor_speedup,
 		"arterials_twoway" => arterials_twoway, "arterial_speedup" => arterial_speedup,
 		"weight_mean" => weight_mean, "road_cv" => road_cv, "beta" => beta,
 		"hurst" => hurst, "direction_rho" => direction_rho,
@@ -291,6 +323,11 @@ function buildCityLattice(nx::Int, ny::Int;
 		push!(art_nodes, a, b)
 	end
 	metadata!(roads, "arterial_nodes", sort!(collect(art_nodes)); style = :note)
+	ring_nodes = Set{Int}()
+	for (a, b, _, _, _) in segments[attr .& keep]
+		push!(ring_nodes, a, b)
+	end
+	metadata!(roads, "attractor_nodes", sort!(collect(ring_nodes)); style = :note)
 	metadata!(roads, "arterial_block_share", count(fast .& keep) / max(count(keep), 1);
 		style = :note)
 

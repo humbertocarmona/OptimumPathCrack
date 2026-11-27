@@ -570,3 +570,63 @@ end
 @testset "buildNetworkFromTables Tests" begin
     test_buildNetworkFromTables()
 end
+
+@testset "DiverCity" begin
+    # net from (src, dst, weight) triples; lengths all 1
+    function mknet(n, es)
+        g = SimpleDiGraph(n)
+        for (a, b, _) in es
+            add_edge!(g, a, b)
+        end
+        W = sparse([e[1] for e in es], [e[2] for e in es], [Float64(e[3]) for e in es], n, n)
+        return CrackNetwork(g, W)
+    end
+    # two disjoint equal routes 1-2-4, 1-3-4: two NSR, no overlap -> D = 2
+    net = mknet(4, [(1, 2, 1), (2, 4, 1), (1, 3, 1), (3, 4, 1)])
+    r = diverCity(net, 1, 4)
+    @test r.n_routes == 2 && r.n_nsr == 2 && r.spread ≈ 1 && r.D ≈ 2
+    # a third disjoint route 1.5 times as costly: out at ε = 0.3, in at ε = 0.6
+    net = mknet(6, [(1, 2, 1), (2, 4, 1), (1, 3, 1), (3, 4, 1), (1, 5, 1), (5, 6, 1), (6, 4, 1)])
+    @test diverCity(net, 1, 4).D ≈ 2
+    @test diverCity(net, 1, 4; epsilon = 0.6).D ≈ 3
+    @test diverCity(net, 1, 4; epsilon = 0.6, k = 2).n_routes == 2
+    # shared first edge 1->2, then 2-3-5 or 2-4-5: J = 1/5, spread 0.8, D = 1.6
+    net = mknet(5, [(1, 2, 1), (2, 3, 1), (3, 5, 1), (2, 4, 1), (4, 5, 1)])
+    r = diverCity(net, 1, 5)
+    @test r.n_nsr == 2 && r.spread ≈ 0.8 && r.D ≈ 1.6
+    # lengths weight the Jaccard: long shared edge -> more similar
+    r = diverCity(net, 1, 5; lengths = [8.0, 1, 1, 1, 1])
+    @test r.spread ≈ 1 - 8 / 12
+    # one route -> 0; no route -> NaN
+    net = mknet(3, [(1, 2, 1), (2, 3, 1)])
+    @test diverCity(net, 1, 3).D == 0
+    @test isnan(diverCity(net, 3, 1).D)
+    # statistics: thread-independent streams, one row per pair
+    g, coords, dm, wm, roads = buildCityLattice(20, 20; seed = 2)
+    net = CrackNetwork(g, wm)
+    ods = [(1, 400), (21, 210), (5, 300)]
+    s = diverCityStatistics(net, ods; lengths = edgeValues(net, dm))
+    @test nrow(s) == 3 && all(0 .<= s.D .<= 10) && all(s.n_nsr .>= 1)
+    @test s.D == diverCityStatistics(net, ods; lengths = edgeValues(net, dm)).D
+end
+
+@testset "city lattice attractor rings" begin
+    nx = 21
+    g, coords, dm, wm, roads = buildCityLattice(nx, nx; pbc = false, attractor_rings = [3, 6],
+        attractor_speedup = 4.0, arterial_segment_cv = 0.0, mean_degree = 3.0, seed = 3)
+    ring = metadata(roads, "attractor_nodes")
+    @test length(ring) == 8 * 3 + 8 * 6
+    node(i, j) = i + nx * (j - 1)
+    c = (nx + 1) ÷ 2
+    for d in (3, 6), i in (c - d):(c + d - 1)      # bottom side, both directions, fast
+        a, b = node(i, c - d), node(i + 1, c - d)
+        @test has_edge(g, a, b) && has_edge(g, b, a)
+        @test wm[a, b] ≈ 0.25 && wm[b, a] ≈ 0.25
+    end
+    @test count(==(0.25), nonzeros(wm)) == 2 * 8 * (3 + 6)
+    @test_throws ArgumentError buildCityLattice(nx, nx; pbc = false, attractor_rings = [11])
+    # no rings: same lattice as before the option existed
+    g0, _, _, w0, _ = buildCityLattice(nx, nx; seed = 3)
+    g1, _, _, w1, _ = buildCityLattice(nx, nx; seed = 3, attractor_rings = Int[])
+    @test g0 == g1 && w0 == w1
+end
