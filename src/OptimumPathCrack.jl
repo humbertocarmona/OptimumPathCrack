@@ -65,6 +65,7 @@ include("create_ODs.jl")
 include("crackOptimalPaths.jl")
 include("crackStatistics.jl")
 include("diverCity.jl")
+include("crackMeasures.jl")
 include("writeGML.jl")
 include("DisorderDist.jl")
 
@@ -73,6 +74,7 @@ export DisorderDist, buildNetworkFromTables, buildSquareNetwork, buildCityLattic
 	cellList_lat_lon, cellList_euclidean, crackOptimalPaths, crackStatistics,
 	writeCrackStatistics, readCrackStatistics, getGoogleDirection, getMapOSM,
 	getTravelTimes, create_ODs, writeGML, writeGPKGFile,
-	CrackNetwork, diverCity, diverCityStatistics, edgeValues
+	CrackNetwork, diverCity, diverCityStatistics, edgeValues,
+	removalsWithin, routeEfficiency, torusODs
 
 end

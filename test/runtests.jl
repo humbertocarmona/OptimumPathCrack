@@ -665,3 +665,56 @@ end
     @test_throws ArgumentError crackOptimalPaths(g, 1, 4, P; route_by = :time,
         distance_matrix = D, removal_matrix = P)
 end
+
+@testset "efficiency and resilience measures" begin
+    # removalsWithin: disconnected after 5 removals (5 path costs)
+    pc = [1.0, 1.1, 1.25, 1.4, 2.0]
+    @test removalsWithin(pc, 5, 0.3) == 3
+    @test removalsWithin(pc, 5, 0.0) == 1
+    @test removalsWithin(pc, 5, 1.0) == 5
+    @test removalsWithin(pc, 5, [0.0, 0.3, 1.0]) == [1, 3, 5]
+    # stopped by a cost ratio: the cost that triggered the stop is not a removal
+    @test removalsWithin([1.0, 1.1, 1.5], 2, 0.3) == 2
+    @test removalsWithin(Float64[], 0, 0.3) == 0
+    @test_throws ArgumentError removalsWithin(pc, 5, -0.1)
+    # a capped crack is the start of the uncapped one
+    g, _, _, wm, _ = buildCityLattice(24, 24; pbc = true, beta = 1.0, oneway_fraction = 0.0,
+        arterial_fraction = 0.0, road_cv = 0.0, seed = 4)
+    net = CrackNetwork(g, wm)
+    full = OptimumPathCrack._crack(net, 1, 24 * 6 + 7; rng = Random.Xoshiro(3))
+    capped = OptimumPathCrack._crack(net, 1, 24 * 6 + 7; maxCostRatio = 1.3, rng = Random.Xoshiro(3))
+    @test removalsWithin(full.path_costs, length(full.removed), 0.3) == length(capped.removed)
+    @test capped.removed == full.removed[1:length(capped.removed)]
+    # routeEfficiency
+    @test routeEfficiency(10.0, 10.0) == 1.0
+    @test routeEfficiency(20.0, 10.0; speed = 0.5) == 1.0
+    @test_throws ArgumentError routeEfficiency(1.0, 1.0; speed = 0.0)
+    # integratedRemovals: trapezoid, and divided by the ℓ range
+    df = DataFrame(ℓ = [1.0, 1.0, 3.0, 3.0], n_removed = [2, 4, 6, 8])
+    @test integratedRemovals(df)[1] ≈ 10.0
+    @test integratedRemovals(df; normalize = true)[1] ≈ 5.0
+    # torusODs: distance on the torus within the tolerance, endpoints in `ok`
+    ok = trues(32 * 32); ok[1:32] .= false
+    ods = torusODs(32, 6, 50, ok, Random.Xoshiro(1))
+    @test length(ods) == 50
+    @test all(abs(hypot(dx, dy) - 6) <= 0.025 * 6 for (_, _, dx, dy) in ods)
+    @test all(ok[o] && ok[d] for (o, d, _, _) in ods)
+    @test_throws ArgumentError torusODs(32, 0.5, 5, ok, Random.Xoshiro(1); tol = 0.01)
+    # crackStatistics columns
+    g2, coords2, dm2, wm2, _ = buildCityLattice(20, 20; pbc = false, beta = 1.0,
+        mean_degree = 3.5, seed = 2)
+    _, od = crackStatistics(g2, coords2, dm2, wm2, [600.0]; n_od_pairs = 6, maxCostRatio = 1.3,
+        eps = [0.1, 0.3], reference_speed = 100.0)
+    @test od.n_eps_0p3 == od.n_removed
+    @test all(od.n_eps_0p1 .<= od.n_eps_0p3)
+    @test all(0.3 .< od.efficiency .< 1.5)
+    @test metadata(od, "eps") == [0.1, 0.3]
+end
+
+@testset "example: step 0 of the city-lattice study" begin
+    include(joinpath(@__DIR__, "examples", "step0.jl"))
+    df = step0(n = 32, Ls = [4, 8], betas = [0.01], seeds = 1:1, pairs = 4, verbose = false)
+    @test nrow(df) == 8
+    @test all(1 / sqrt(2) - 0.02 .<= df.eta .<= 1.02)        # uniform grid: η in [1/√2, 1]
+    @test all(df.ne_e0p1 .<= df.ne_e0p3 .<= df.ne_e1p0)
+end

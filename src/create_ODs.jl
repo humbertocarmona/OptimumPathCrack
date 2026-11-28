@@ -104,3 +104,34 @@ function create_ODs(
 	end
 	return OD_vector
 end
+
+"""
+	torusODs(nx, L, n_pairs, ok, rng; tol = 0.025) -> Vector{NTuple{4, Int}}
+
+`n_pairs` OD pairs `(o, d, dx, dy)` on an `nx × nx` torus whose node `(i, j)` has index
+`i + nx*(j-1)` (`buildCityLattice` and `buildSquareNetwork` with periodic boundaries), at
+Euclidean distance `L ± tol L` (in lattice spacings). `o` is drawn uniformly among the nodes
+with `ok[o]`, then the offset `(dx, dy)` uniformly among the lattice offsets at that
+distance (so every direction class is sampled), and the pair is kept if `ok[d]`. Use
+`ok` = the largest strongly connected component. `L` should not exceed `nx/4`, so the
+pair does not see the other way around the torus.
+"""
+function torusODs(nx::Int, L::Real, n_pairs::Int, ok::AbstractVector{Bool},
+	rng::AbstractRNG; tol::Real = 0.025)
+	r = ceil(Int, (1 + tol) * L)
+	offs = [(dx, dy) for dx in -r:r for dy in -r:r if abs(hypot(dx, dy) - L) <= tol * L]
+	isempty(offs) && throw(ArgumentError("no lattice offset at distance $L ± $(tol * L)"))
+	pool = findall(ok)
+	out = NTuple{4, Int}[]
+	tries = 0
+	while length(out) < n_pairs
+		(tries += 1) > 1000n_pairs && error("too few nodes in `ok` to draw $n_pairs pairs")
+		o = rand(rng, pool)
+		dx, dy = rand(rng, offs)
+		i, j = (o - 1) % nx + 1, (o - 1) ÷ nx + 1
+		d = mod1(i + dx, nx) + nx * (mod1(j + dy, nx) - 1)
+		ok[d] || continue
+		push!(out, (o, d, dx, dy))
+	end
+	return out
+end

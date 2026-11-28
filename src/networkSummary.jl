@@ -46,14 +46,17 @@ function networkSummary(g::SimpleDiGraph, weight_matrix = nothing)
 end
 
 """
-	integratedRemovals(od_df; column = :n_removed) -> (R, per_distance)
+	integratedRemovals(od_df; column = :n_removed, normalize = false) -> (R, per_distance)
 
 Robustness measure from a `crackStatistics` OD table: the mean of `column` at each
 distance ℓ, integrated over ℓ with the trapezoidal rule. Also returns the per-distance
-table (`ℓ`, `mean`, `sem`, `n`) so the curve can be plotted. Divide `R` by the ℓ range
-to get the average number of removals per pair.
+table (`ℓ`, `mean`, `sem`, `n`) so the curve can be plotted. With `normalize = true` the
+integral is divided by the ℓ range, giving the average number of removals per pair,
+R = (1/(ℓmax − ℓmin)) ∫ ⟨N⟩ dℓ; with `column = :n_eps_0p3` (`crackStatistics(...; eps)`)
+this is the resilience R_ε at ε = 0.3.
 """
-function integratedRemovals(od_df::DataFrame; column::Symbol = :n_removed)
+function integratedRemovals(od_df::DataFrame; column::Symbol = :n_removed,
+	normalize::Bool = false)
 	per = combine(groupby(od_df, :ℓ), column => (x -> sum(x) / length(x)) => :mean,
 		column => (x -> length(x) > 1 ?
 						sqrt(sum(abs2, x .- sum(x) / length(x)) / (length(x) - 1) / length(x)) :
@@ -62,5 +65,6 @@ function integratedRemovals(od_df::DataFrame; column::Symbol = :n_removed)
 	sort!(per, :ℓ)
 	ℓ, m = per.ℓ, per.mean
 	R = sum((ℓ[k+1] - ℓ[k]) * (m[k+1] + m[k]) / 2 for k in 1:(length(ℓ)-1); init = 0.0)
+	normalize && length(ℓ) > 1 && (R /= (last(ℓ) - first(ℓ)))
 	return R, per
 end

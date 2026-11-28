@@ -2,7 +2,8 @@
 	crackStatistics(g, coords, distance_matrix, weight_matrix, ℓ;
 					n_od_pairs = 100, seed = 1, δ = 0.01, cellWidth = 100.0,
 					maxCostRatio = Inf, nMaxRem = 0, cell_list = nothing,
-					route_by = :weight, removal_matrix = nothing)
+					route_by = :weight, removal_matrix = nothing, eps = Float64[],
+					reference_speed = nothing)
 
 Runs the optimum-path-crack experiment for OD distance `ℓ` (meters), or for each
 distance in a vector `ℓ`. For each OD pair from `create_ODs`, the network is cracked
@@ -12,6 +13,13 @@ same strongly connected component are used, so every pair starts with a path.
 time (`distance_matrix` × pace) and removes the slowest edge; path costs are then travel
 times, while the `weight` column of `edges_df` stays the pace. `removal_matrix` sets any
 other removal criterion. See `crackOptimalPaths`.
+
+With `eps = [ε₁, ε₂, …]`, `od_df` gets a column `n_eps_<ε>` (e.g. `n_eps_0p3`) per bound:
+the removals made while the optimal path cost at most `(1 + ε)` times the first
+(`removalsWithin`). Set `maxCostRatio = 1 + maximum(eps)` to stop each crack there. With
+`reference_speed`, `od_df` gets `efficiency = (od_distance / reference_speed) / first_cost`
+(`routeEfficiency`); with travel times as weights, the reference speed is a block length
+over the mean block travel time.
 
 OD pairs are cracked in parallel on `Threads.nthreads()` threads (start Julia with
 `-t auto` or `JULIA_NUM_THREADS`). Results do not depend on the number of threads.
@@ -49,7 +57,9 @@ function crackStatistics(g::SimpleDiGraph,
 	nMaxRem::Int64 = 0,
 	cell_list::Union{Nothing, AbstractDict} = nothing,
 	route_by::Symbol = :weight,
-	removal_matrix::Union{Nothing, SparseMatrixCSC{Float64, Int64}} = nothing)
+	removal_matrix::Union{Nothing, SparseMatrixCSC{Float64, Int64}} = nothing,
+	eps::AbstractVector{<:Real} = Float64[],
+	reference_speed::Union{Nothing, Real} = nothing)
 
 	if cell_list === nothing
 		cell_list = cellList_lat_lon(coords; cellWidth = cellWidth)
@@ -85,6 +95,7 @@ function crackStatistics(g::SimpleDiGraph,
 		od_distance = Float64[], origin_outdegree = Int[], destination_indegree = Int[],
 		n_removed = Int[], first_cost = Float64[], last_cost = Float64[],
 		cost_ratio = Float64[], stop_reason = Symbol[])
+	neps = [Int[] for _ in eps]
 
 	for (t, (k, od_id, o, d)) in enumerate(tasks)
 		ℓ = Float64(ℓs[k])
@@ -100,7 +111,16 @@ function crackStatistics(g::SimpleDiGraph,
 		od_distance = euclidean_distance(LLA(coords[o]..., 0.0), LLA(coords[d]..., 0.0))
 		push!(od_df, (ℓ, od_id, o, d, od_distance, outdegree(g, o), indegree(g, d),
 			length(res.removed), first_cost, last_cost, last_cost / first_cost, res.stop_reason))
+		for (i, ε) in enumerate(eps)
+			push!(neps[i], removalsWithin(costs, length(res.removed), ε))
+		end
 	end
+	for (i, ε) in enumerate(eps)
+		od_df[!, Symbol("n_eps_", epsTag(ε))] = neps[i]
+	end
+	reference_speed === nothing ||
+		(od_df.efficiency = routeEfficiency.(od_df.first_cost, od_df.od_distance;
+			speed = reference_speed))
 
 	params = Dict{String, Any}(
 		"distances" => Float64.(collect(ℓs)),
@@ -108,7 +128,7 @@ function crackStatistics(g::SimpleDiGraph,
 		"seed" => seed,
 		"delta" => δ,
 		"cellWidth" => Float64(get(cell_list, "cellWidth", cellWidth)),
-		"maxCostRatio" => maxCostRatio, "route_by" => string(route_by),
+		"maxCostRatio" => maxCostRatio, "route_by" => string(route_by), "eps" => Float64.(eps),
 		"nMaxRem" => nMaxRem,
 		"tie_breaking" => "uniform random (equal-cost paths, then equal-weight edges)",
 		"n_nodes" => nv(g),
